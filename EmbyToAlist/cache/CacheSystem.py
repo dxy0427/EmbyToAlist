@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 class CacheWriter(AbstractAsyncContextManager):
     def __init__(self, file_path: Path, lock, cache_key: str):
         self.file_path: Path = file_path
+        self.temp_file_path: Path = file_path.with_suffix(".temp")
         self.queue = asyncio.Queue()
         self.lock = lock
         self.cache_key = cache_key
@@ -29,6 +30,12 @@ class CacheWriter(AbstractAsyncContextManager):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # 关闭写入任务
         await self.close()
+        if exc_type is None and self.temp_file_path.exists():
+            self.temp_file_path.rename(self.file_path)  
+        else:
+            if self.temp_file_path.exists():
+                self.temp_file_path.unlink(missing_ok=True)
+        
     
     async def precheck(self):
         """
@@ -38,12 +45,19 @@ class CacheWriter(AbstractAsyncContextManager):
             logger.warning(f"Cache file {self.file_path} already exists, Skipping.")
             # 阻止后续的写入
             self._closed = True
+            return
+        
+        # 检查临时文件冲突
+        if self.temp_file_path.exists():
+            logger.warning(f"Another writer is creating this cache, skipping.")
+            self._closed = True
+            return
         
         # 检查是否有重叠的缓存文件
-        for cache_file in self.file_path.parent.iterdir():
+        for cache_file in self.temp_file_path.parent.iterdir():
             if cache_file.is_file():
-                if cache_file.name.startswith("cache_file"):
-                    new_start, new_end = map(int, self.file_path.stem.split("_")[2:4])
+                if cache_file.name.startswith("cache_file") and cache_file.suffix != ".temp":
+                    new_start, new_end = map(int, self.temp_file_path.stem.split("_")[2:4])
                     old_start, old_end = map(int, cache_file.stem.split("_")[2:4])
                     if new_start >= old_start and new_end <= old_end:
                         logger.warning(f"Overlapping cache file found: {cache_file}")
@@ -61,7 +75,7 @@ class CacheWriter(AbstractAsyncContextManager):
         async with self.lock:
             await self.precheck()
             
-            async with aiofiles.open(self.file_path, mode="wb") as f:
+            async with aiofiles.open(self.temp_file_path, mode="wb") as f:
                 while True:
                     chunk = await self.queue.get()
                     if chunk is None:
@@ -93,11 +107,19 @@ class CacheWriter(AbstractAsyncContextManager):
         """
         if self._closed:
             return
+        self._closed = True
         await self.queue.join()  # 等待所有任务完成
         await self.queue.put(None)  # 投递结束信号
         if self._writer_task is not None:
             await self._writer_task
-        self._closed = True
+        
+    async def delete(self):
+        """
+        删除缓存文件
+        """
+        if self.file_path.exists():
+            self.file_path.unlink()
+            logger.info(f"Cache file {self.file_path} deleted.")
         
 
 class CacheSystem():
@@ -176,7 +198,7 @@ class CacheSystem():
         
         return writer
     
-    async def write_cache_file(self, request_info: RequestInfo, file_request: FileRequest):
+    async def write_cache_file(self, writer, request_info: RequestInfo, file_request: 'FileRequest'):
         """
         写入缓存文件
         """
@@ -184,21 +206,26 @@ class CacheSystem():
         total_bytes_downloaded = 0
         cache_size = request_info.range_info.cache_range[1] - request_info.range_info.cache_range[0] + 1
         
-        writer = self.get_writer(request_info)
-        async with writer:
-            response = await file_request.get_or_start_conn()
-            async for chunk in response.aiter_bytes():
-                total_bytes_downloaded += len(chunk)
-                if written < cache_size:          
-                    remaining = cache_size - written
-                    if remaining <= 0:
-                        break
-                    chunk_size = min(remaining, len(chunk))
-                    await writer.write(chunk[:chunk_size])
-                    written += chunk_size
-                                
-                await writer.write(chunk)
+        try:
+            async with writer:
+                response = await file_request.get_or_start_conn()
+                async for chunk in response.aiter_bytes():
+                    total_bytes_downloaded += len(chunk)
+                    if written < cache_size:          
+                        remaining = cache_size - written
+                        if remaining <= 0:
+                            break
+                        chunk_size = min(remaining, len(chunk))
+                        await writer.write(chunk[:chunk_size])
+                        written += chunk_size
+                                    
+                    await writer.write(chunk)
+                await file_request.close_conn()
+                await self.condition.notify_all()
+        except Exception as e:
+            logger.error(f"Error occurred while writing cache file: {e}")
             await file_request.close_conn()
+            await writer.delete()
             await self.condition.notify_all()
     
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
