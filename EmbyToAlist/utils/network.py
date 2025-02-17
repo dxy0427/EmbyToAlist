@@ -1,10 +1,12 @@
+import asyncio
+
 import fastapi
 import httpx
 from loguru import logger
 
 from ..config import FORCE_CLIENT_RECONNECT
 from ..models import RequestInfo, CacheRangeStatus
-from ..cache.CacheManager import CacheManager
+from ..cache.manager import CacheManager, FileRequestManager, FileRequest
 from ..cache.CacheSystem import CacheSystem
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
@@ -29,6 +31,8 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
     """
     client = ClientManager.get_client()
     cache_system: CacheSystem = CacheManager.get_cache_system()
+    request_manager: FileRequestManager = CacheManager.get_request_manager()
+    condition = cache_system.condition
     
     cache_start, cache_end = request_info.range_info.cache_range
     cache_size = cache_end - cache_start + 1
@@ -56,40 +60,42 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
             logger.debug(f"Requesting {raw_url} with headers {request_header}")
             
             if writer is not None:
-                async with writer:
-                    async with client.stream("GET", raw_url, headers=request_header) as response:
-                        verify_download_response(response)
-                        if status_code == 206 and response.status_code != 206:
-                            raise ValueError(f"Expected 206 response, got {response.status_code}")
+                if not request_manager.request_exists(request_info.file_id, request_header):
+                    file_request = await request_manager.get_or_create_request(request_info.file_id, request_header, raw_url)
+                    asyncio.create_task(cache_system.write_cache_file(writer, file_request, file_request))
+    
+                    async with condition:
+                        await condition.wait(not request_manager.request_exists(request_info.file_id, request_header))
                         
-                        async for chunk in response.aiter_bytes():
-                            total_bytes_downloaded += len(chunk)
-                            if written < cache_size:          
-                                remaining = cache_size - written
-                                if remaining <= 0:
-                                    break
-                                chunk_size = min(remaining, len(chunk))
-                                await writer.write(chunk[:chunk_size])
-                                written += chunk_size
-                            
-                            # 从后端传输大于1MB的数据后，强制断开连接
-                            if FORCE_CLIENT_RECONNECT and total_bytes_downloaded > cache_size + 1024*1024:
-                                raise ForcedReconnectError()
+                    if cache_system.get_cache_status(request_info):
+                        cache: AsyncGenerator[bytes, None] = cache_system.read_cache_file(request_info)
+                        async for chunk in cache:
                             yield chunk
-            else:
-                async with client.stream("GET", raw_url, headers=request_header) as response:
-                    verify_download_response(response)
-                    if status_code == 206 and response.status_code != 206:
-                        raise ValueError(f"Expected 206 response, got {response.status_code}")
-                    
-                    async for chunk in response.aiter_bytes():
-                        total_bytes_downloaded += len(chunk)
-                        # 从后端传输大于1MB的数据后，强制断开连接
-                        if FORCE_CLIENT_RECONNECT:
-                            if cache is not None and total_bytes_downloaded > 1024*1024:
-                                raise ForcedReconnectError()
-                            
-                        yield chunk
+                    else:
+                        raise fastapi.HTTPException(status_code=500, detail="Cache Write Failed")
+                else:
+                    async with condition:
+                        await condition.wait(not request_manager.request_exists(request_info.file_id, request_header))
+                        if cache_system.get_cache_status(request_info):
+                            cache: AsyncGenerator[bytes, None] = cache_system.read_cache_file(request_info)
+                            async for chunk in cache:
+                                yield chunk
+                        else:
+                            raise fastapi.HTTPException(status_code=500, detail="Cache Write Failed")
+            
+            async with client.stream("GET", raw_url, headers=request_header) as response:
+                verify_download_response(response)
+                if status_code == 206 and response.status_code != 206:
+                    raise ValueError(f"Expected 206 response, got {response.status_code}")
+                
+                async for chunk in response.aiter_bytes():
+                    total_bytes_downloaded += len(chunk)
+                    # 从后端传输大于1MB的数据后，强制断开连接
+                    if FORCE_CLIENT_RECONNECT:
+                        if cache is not None and total_bytes_downloaded > 10*1024*1024:
+                            raise ForcedReconnectError()
+                        
+                    yield chunk
                     
         except ForcedReconnectError as e:
             logger.info(f"Expected ForcedReconnectError: {e}")

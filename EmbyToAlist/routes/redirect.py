@@ -7,7 +7,7 @@ from ..utils.path import should_redirect_to_alist
 from ..utils.helpers import extract_api_key, get_content_type, RawLinkManager
 from ..utils.network import reverse_proxy, temporary_redirect
 from ..api.emby import get_item_info, get_file_info
-from ..cache.CacheManager import CacheManager
+from ..cache.manager import CacheManager
 
 router = fastapi.APIRouter()
 
