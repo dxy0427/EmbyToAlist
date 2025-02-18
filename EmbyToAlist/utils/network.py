@@ -35,12 +35,8 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
     request_manager: FileRequestManager = CacheManager.get_request_manager()
     condition = cache_system.condition
     
-    cache_start, cache_end = request_info.range_info.cache_range
-    cache_size = cache_end - cache_start + 1
-    
     async def merged_stream() -> AsyncGenerator[bytes, None]:
         writer = None
-        written = 0
         total_bytes_downloaded = 0
         
         try:
@@ -59,27 +55,30 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
             
             request_header['host'] = raw_url.split('/')[2]
             logger.debug(f"Requesting {raw_url} with headers {request_header}")
+            file_id = request_info.file_info.name
             
             if writer is not None:
-                if not request_manager.request_exists(request_info.file_id, request_header):
-                    file_request = await request_manager.get_or_create_request(request_info.file_id, request_header, raw_url)
+                if not await request_manager.request_exists(file_id, request_header):
+                    file_request = await request_manager.get_or_create_request(file_id, request_header, raw_url)
                     asyncio.create_task(cache_system.write_cache_file(writer, request_info, file_request))
     
                     async with condition:
-                        await condition.wait(not request_manager.request_exists(request_info.file_id, request_header))
+                        while not await request_manager.request_exists(file_id, request_header):
+                            await condition.wait()
                         
                     if cache_system.get_cache_status(request_info):
-                        cache: AsyncGenerator[bytes, None] = cache_system.read_cache_file(request_info)
-                        async for chunk in cache:
+                        cache_file: AsyncGenerator[bytes, None] = cache_system.read_cache_file(request_info)
+                        async for chunk in cache_file:
                             yield chunk
                     else:
                         raise fastapi.HTTPException(status_code=500, detail="Cache Write Failed")
                 else:
                     async with condition:
-                        await condition.wait(not request_manager.request_exists(request_info.file_id, request_header))
+                        while not await request_manager.request_exists(file_id, request_header):
+                            await condition.wait()
                         if cache_system.get_cache_status(request_info):
-                            cache: AsyncGenerator[bytes, None] = cache_system.read_cache_file(request_info)
-                            async for chunk in cache:
+                            cache_file: AsyncGenerator[bytes, None] = cache_system.read_cache_file(request_info)
+                            async for chunk in cache_file:
                                 yield chunk
                         else:
                             raise fastapi.HTTPException(status_code=500, detail="Cache Write Failed")
@@ -104,16 +103,7 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
         except Exception as e:
             logger.error(f"Reverse_proxy failed, {e}")
             raise fastapi.HTTPException(status_code=500, detail="Reverse Proxy Failed")
-        finally:
-            # 检查写入的数据是否与缓存大小相等
-            if writer is not None and written != cache_size:
-                logger.debug(f"Cache Write Error: Written {written} bytes, expected {cache_size} bytes")
-            logger.debug(f"Total Bytes Downloaded: {total_bytes_downloaded}")
-            if writer is not None:
-                logger.debug(f"Total Bytes Written: {written}")
-            else:
-                logger.debug("No Cache Write")
-
+        
     return fastapi.responses.StreamingResponse(
         merged_stream(), 
         headers=response_headers, 

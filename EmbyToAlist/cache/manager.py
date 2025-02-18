@@ -5,6 +5,7 @@ from loguru import logger
 
 from .CacheSystem import CacheSystem
 from ..utils.common import ClientManager
+from typing import Optional
     
 class FileRequest():
     """文件请求
@@ -14,7 +15,7 @@ class FileRequest():
         self.headers = headers
         self.client: httpx.AsyncClient = ClientManager.get_client()
         self.lock = asyncio.Lock()
-        self.response: httpx.Response = self.start_connection()
+        self.response: Optional[httpx.Response] = None
         
     async def get_or_start_conn(self) -> httpx.Response:
         async with self.lock:
@@ -31,7 +32,7 @@ class FileRequest():
     async def close_conn(self):
         async with self.lock:
             if self.response is not None:
-                await self.response.__aclose__()
+                await self.response.aclose()
                 logger.debug(f"Connection closed for {self.url}")
                 
         

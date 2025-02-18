@@ -221,12 +221,14 @@ class CacheSystem():
                                     
                     await writer.write(chunk)
                 await file_request.close_conn()
-                await self.condition.notify_all()
+                async with self.condition:
+                    self.condition.notify_all()
         except Exception as e:
             logger.error(f"Error occurred while writing cache file: {e}")
             await file_request.close_conn()
             await writer.delete()
-            await self.condition.notify_all()
+            async with self.condition:
+                self.condition.notify_all()
     
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
         """
