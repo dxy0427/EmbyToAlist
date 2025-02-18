@@ -60,11 +60,7 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
             if writer is not None:
                 if not await request_manager.request_exists(file_id, request_header):
                     file_request = await request_manager.get_or_create_request(file_id, request_header, raw_url)
-                    asyncio.create_task(cache_system.write_cache_file(writer, request_info, file_request))
-    
-                    async with condition:
-                        while not await request_manager.request_exists(file_id, request_header):
-                            await condition.wait()
+                    await cache_system.write_cache_file(writer, request_info, file_request)
                         
                     if cache_system.get_cache_status(request_info):
                         cache_file: AsyncGenerator[bytes, None] = cache_system.read_cache_file(request_info)

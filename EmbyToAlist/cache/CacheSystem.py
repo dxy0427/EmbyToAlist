@@ -198,7 +198,7 @@ class CacheSystem():
         
         return writer
     
-    async def write_cache_file(self, writer, request_info: RequestInfo, file_request: 'FileRequest'):
+    async def write_cache_file(self, writer: CacheWriter, request_info: RequestInfo, file_request: 'FileRequest'):
         """
         写入缓存文件
         """
@@ -220,11 +220,12 @@ class CacheSystem():
                         written += chunk_size
                                     
                     await writer.write(chunk)
+                    
                 await file_request.close_conn()
                 async with self.condition:
                     self.condition.notify_all()
         except Exception as e:
-            logger.error(f"Error occurred while writing cache file: {e}")
+            logger.error(f"Error occurred while writing cache file: {repr(e)}")
             await file_request.close_conn()
             await writer.delete()
             async with self.condition:
