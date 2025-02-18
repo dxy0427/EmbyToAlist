@@ -6,7 +6,7 @@ import uvicorn
 
 from .config import LOG_LEVEL, CACHE_ENABLE, CACHE_PATH
 from .routes import redirect
-from .utils.network import ClientManager
+from .utils.common import ClientManager
 from .cache.manager import CacheManager
 
 # 使用上下文管理器，创建异步请求客户端

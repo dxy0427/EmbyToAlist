@@ -4,7 +4,7 @@ import httpx
 from loguru import logger
 
 from .CacheSystem import CacheSystem
-from ..utils.network import ClientManager
+from ..utils.common import ClientManager
     
 class FileRequest():
     """文件请求

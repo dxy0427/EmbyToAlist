@@ -1,11 +1,10 @@
-from httpx import AsyncClient
 from fastapi import HTTPException
 from loguru import logger
 
 from ..config import EMBY_SERVER
 from ..models import ItemInfo, FileInfo, TVShowsInfo
 from ..utils.path import transform_file_path
-from ..utils.network import ClientManager
+from ..utils.common import ClientManager
 
 async def get_item_info(item_id, api_key) -> ItemInfo:
     """获取Emby Item信息

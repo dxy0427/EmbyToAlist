@@ -6,9 +6,10 @@ from loguru import logger
 
 from ..config import FORCE_CLIENT_RECONNECT
 from ..models import RequestInfo, CacheRangeStatus
-from ..cache.manager import CacheManager, FileRequestManager, FileRequest
+from ..cache.manager import CacheManager, FileRequestManager
 from ..cache.CacheSystem import CacheSystem
-from typing import AsyncGenerator, Optional, TYPE_CHECKING
+from .common import ClientManager
+from typing import AsyncGenerator, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..utils.helpers import RawLinkManager
 
@@ -159,23 +160,3 @@ class ForcedReconnectError(Exception):
     def __init__(self, message="Expected Error, Force Break the Connection"):
         self.message = message
         super().__init__(message)
-
-class ClientManager():
-    _client: Optional[httpx.AsyncClient] = None
-    
-    @classmethod
-    def init_client(cls):
-        if cls._client is None:
-            cls._client = httpx.AsyncClient()
-    
-    @classmethod
-    def get_client(cls):
-        if cls._client is None:
-            logger.error("Request Client not initialized")
-            raise ValueError("Request Client not initialized")
-        return cls._client
-    
-    @classmethod
-    async def close_client(cls):
-        if cls._client is not None:
-            await cls._client.aclose()

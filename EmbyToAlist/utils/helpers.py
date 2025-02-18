@@ -6,8 +6,7 @@ from loguru import logger
 from aiocache import Cache
 
 from ..api.alist import get_alist_raw_url
-from .network import ClientManager
-
+from ..utils.common import ClientManager
 # a wrapper function to get the time of the function
 def get_time(func):
     def wrapper(*args, **kwargs):
@@ -74,7 +73,7 @@ def match_with_regex(pattern, target_string):
             return False
     else:
         raise ValueError("Invalid regex pattern")
-    
+            
 class RawLinkManager():
     """管理alist直链获取任务
     支持普通文件和strm文件
