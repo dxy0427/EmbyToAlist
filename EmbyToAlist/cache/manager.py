@@ -34,6 +34,7 @@ class FileRequest():
             if self.response is not None:
                 await self.response.aclose()
                 logger.debug(f"Connection closed for {self.url}")
+                self.response = None
                 
         
 class FileRequestManager():
@@ -61,17 +62,19 @@ class FileRequestManager():
             file_range = headers.get("Range").split('=')[1]
             return file_id in self.requests and file_range in self.requests[file_id]
     
-    async def close_request(self, file_id: str):
-        """默认关闭该文件的所有请求
+    async def close_request(self, file_id: str, headers: dict):
+        """关闭该文件的请求
 
         Args:
             file_id (str): 文件ID
         """
         async with self.lock:
-            if file_id in self.requests:
-                for request in self.requests[file_id].values():
-                    await request.close_conn()
-                del self.requests[file_id]
+            file_range = headers.get("Range").split('=')[1]
+            if file_id in self.requests and file_range in self.requests[file_id]:
+                await self.requests[file_id][file_range].close_conn()
+                del self.requests[file_id][file_range]
+                if not self.requests[file_id]:
+                    del self.requests[file_id]
         
 class CacheManager():
     _cache_system: CacheSystem = None
