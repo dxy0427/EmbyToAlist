@@ -2,125 +2,68 @@ import asyncio
 import hashlib
 from pathlib import Path
 from weakref import WeakValueDictionary
-from contextlib import AbstractAsyncContextManager
 
 import aiofiles
 from loguru import logger
 
 from ..models import FileInfo, RequestInfo, CacheRangeStatus
+from .manager import TaskManager
+from ..utils.common import ClientManager
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
-    from .manager import FileRequest
-
-class CacheWriter(AbstractAsyncContextManager):
-    def __init__(self, file_path: Path, lock, cache_key: str):
-        self.file_path: Path = file_path
-        self.temp_file_path: Path = file_path.with_suffix(".temp")
+    pass
+class ChunksWriter():
+    def __init__(self):
         self.queue = asyncio.Queue()
-        self.lock = lock
-        self.cache_key = cache_key
-        self._writer_task = None
-        self._closed = False
-    
-    async def __aenter__(self):
-        # 启动后台写入任务
-        self._writer_task = asyncio.create_task(self._writer())
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # 关闭写入任务
-        await self.close()
-        if exc_type is None and self.temp_file_path.exists():
-            self.temp_file_path.rename(self.file_path)  
+        self.task = None
+        self.client = ClientManager.get_client()
+        self.cache_data = []
+        self.number_of_chunks = 0
+
+    async def _write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
+        
+        # 每个chunk 5MB
+        chunk_size = 5 * 1024 * 1024
+        cache_end = request_info.file_info.cache_file_size
+        self.number_of_chunks = ((cache_end + chunk_size) // chunk_size) + 1
+        
+        if request_info.range_info.cache_range[0] == 0:
+            # 读取头部
+            request_header['Range'] = f"bytes=0-{cache_end+chunk_size}"
         else:
-            if self.temp_file_path.exists():
-                self.temp_file_path.unlink(missing_ok=True)
-        
-    
-    async def precheck(self):
-        """
-        预检查缓存文件是否存在，如果存在则跳过写入
-        """
-        if self.file_path.exists():
-            logger.warning(f"Cache file {self.file_path} already exists, Skipping.")
-            # 阻止后续的写入
-            self._closed = True
-            return
-        
-        # 检查临时文件冲突
-        if self.temp_file_path.exists():
-            logger.warning(f"Another writer is creating this cache, skipping.")
-            self._closed = True
-            return
-        
-        # 检查是否有重叠的缓存文件
-        for cache_file in self.temp_file_path.parent.iterdir():
-            if cache_file.is_file():
-                if cache_file.name.startswith("cache_file") and cache_file.suffix != ".temp":
-                    new_start, new_end = map(int, self.temp_file_path.stem.split("_")[2:4])
-                    old_start, old_end = map(int, cache_file.stem.split("_")[2:4])
-                    if new_start >= old_start and new_end <= old_end:
-                        logger.warning(f"Overlapping cache file found: {cache_file}")
-                        self._closed = True
-                        break
-                    if new_start <= old_start and new_end >= old_end:
-                        logger.warning(f"Existing Cache Range within new range. Deleting old cache.")
-                        cache_file.unlink()
-                             
-    async def _writer(self):
-        """
-        后台任务：持续从队列中读取数据块，顺序写入文件。
-        当接收到特殊标记（例如 None）时，退出任务。
-        """
-        async with self.lock:
-            await self.precheck()
+            # 读取尾部
+            request_header['Range'] = f"bytes={request_info.range_info.cache_range[0]}-"
+
+        async with self.client.stream("GET", raw_url, headers=request_header) as response:
+            if response.status_code != 206:
+                raise ValueError(f"Expected 206 response, got {response.status_code}")
             
-            async with aiofiles.open(self.temp_file_path, mode="wb") as f:
-                while True:
-                    chunk = await self.queue.get()
-                    if chunk is None:
-                        # 收到退出信号
-                        self.queue.task_done()
-                        break
-                    await f.write(chunk)
-                    self.queue.task_done()
+            async for chunk in response.iter_bytes(chunk_size):
+                # 写入缓存文件
+                await self.queue.put(chunk)
             
-            # 写入完成后，不再接受新的数据块
-            self._closed = True
-    
-    async def write(self, chunk: bytes):
+    async def write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
+        """写入缓存文件
         """
-        异步投递数据块到写入队列。
-        多个任务可并发调用该方法。
+        if self.task is None:
+            self.task = asyncio.create_task(self._write(request_info, raw_url, request_header))
+        else:
+            logger.debug("Write task already exists, skipping")
+            
+    async def read(self) -> AsyncGenerator[bytes, None]:
+        """读取缓存文件
+        如果cache data不为空，则直接返回
+        否则从队列中读取数据，并将数据写入缓存文件
         """
-        if self._closed:
-            # 避免重复写入
-            # logger.warning(f"Cache writer for {self.file_path} is closed, skipping write.")
-            return
-        await self.queue.put(chunk)
-    
-    async def close(self):
-        """
-        关闭缓存写入器：
-        1. 等待队列中所有任务完成。
-        2. 投递退出信号（None）并等待后台任务退出。
-        """
-        if self._closed:
-            return
-        self._closed = True
-        await self.queue.join()  # 等待所有任务完成
-        await self.queue.put(None)  # 投递结束信号
-        if self._writer_task is not None:
-            await self._writer_task
-        
-    async def delete(self):
-        """
-        删除缓存文件
-        """
-        if self.file_path.exists():
-            self.file_path.unlink()
-            logger.info(f"Cache file {self.file_path} deleted.")
-        
+        if self.cache_data:
+            for data in self.cache_data:
+                yield data
+        else:
+            while not self.queue.empty():
+                data = await self.queue.get()
+                self.cache_data.append(data)
+                yield data
+                self.queue.task_done()
 
 class CacheSystem():
     VERSION: str = "1.0.0"
@@ -128,6 +71,9 @@ class CacheSystem():
         self.root_dir: Path = Path(root_dir)
         self.cache_locks = WeakValueDictionary()
         self.condition = asyncio.Condition()
+        self.cache_file_name = "cache_file_{start}_{end}"
+        self.client = ClientManager.get_client()
+        self.task_manager = TaskManager()
         self._initialize()
         
     def _write_version_file(self):
@@ -177,58 +123,39 @@ class CacheSystem():
             version = self._read_version_file()
             if version != self.VERSION:
                 logger.warning(f"Cache version mismatch, current version: {self.VERSION}, cache version: {version}")
-                logger.warning("Please clear the cache directory")
+                logger.warning("Please remove the cache directory")
                 exit(1)
                 
-    def get_writer(self, request_info: RequestInfo) -> CacheWriter:
-        """创建缓存写入器
-        """
-        file_info = request_info.file_info
+    async def get_writer(self, request_info: RequestInfo) -> ChunksWriter:
+        file_name = request_info.file_info.name
+        cache_range_status = request_info.cache_range_status
         
-        subdirname, dirname = self._get_hash_subdirectory_from_path(file_info)        
-        cache_start, cache_end = request_info.range_info.cache_range
-        
-        cache_file_name = f'cache_file_{cache_start}_{cache_end}'
-        cache_file_dir = self.root_dir / subdirname / dirname
-        cache_file_path: Path = cache_file_dir / cache_file_name
-        
-        cache_file_dir.mkdir(parents=True, exist_ok=True)
-        
-        writer = CacheWriter(cache_file_path, self._get_cache_lock(subdirname, dirname), self._get_hash_subdirectory_from_path(file_info)[1])
-        
-        return writer
+        if self.task_manager.get_task(file_name, cache_range_status) is not None:
+            return self.task_manager.get_task(file_name, cache_range_status)
+        else:
+            writer = ChunksWriter()
+            self.task_manager.create_task(file_name, writer, cache_range_status)
+            asyncio.create_task(self.write_cache_file(request_info))
+            return writer
     
-    async def write_cache_file(self, writer: CacheWriter, request_info: RequestInfo, file_request: 'FileRequest'):
-        """
-        写入缓存文件
-        """
-        written = 0
-        total_bytes_downloaded = 0
-        cache_size = request_info.range_info.cache_range[1] - request_info.range_info.cache_range[0] + 1
+    async def write_cache_file(self, request_info: RequestInfo):
+        # 后台缓存文件，sleep防止占用异步线程
+        asyncio.sleep(20)
+        subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
+        cache_dir = self.root_dir / subdirname / dirname
+        if not cache_dir.exists():
+            cache_dir.mkdir(parents=True, exist_ok=True)
+    
+        cache_file_name = self.cache_file_name.format(start=request_info.range_info.cache_range[0], end=request_info.range_info.cache_range[1])
         
-        try:
-            async with writer:
-                response = await file_request.get_or_start_conn()
-                async for chunk in response.aiter_bytes():
-                    total_bytes_downloaded += len(chunk)
-                    if written < cache_size:          
-                        remaining = cache_size - written
-                        if remaining <= 0:
-                            break
-                        chunk_size = min(remaining, len(chunk))
-                        await writer.write(chunk[:chunk_size])
-                        written += chunk_size
-                                    
-                    await writer.write(chunk)
+        chunk_writer = await self.get_writer(request_info)
+        async with self._get_cache_lock(subdirname, dirname):
+            async with aiofiles.open(cache_dir / cache_file_name, 'wb') as f:
+                async for chunk in chunk_writer.read():
+                    await f.write(chunk)
                     
-                async with self.condition:
-                    self.condition.notify_all()
-                return True
-        except Exception as e:
-            await writer.delete()
-            async with self.condition:
-                self.condition.notify_all()
-            return False
+        await self.task_manager.remove_task(request_info.file_info.name, request_info.cache_range_status)
+        logger.debug(f"Cache file written: {cache_file_name}")
     
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
         """

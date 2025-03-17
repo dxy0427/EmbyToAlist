@@ -1,84 +1,72 @@
 import asyncio
 
-import httpx
 from loguru import logger
 
 from .CacheSystem import CacheSystem
-from ..utils.common import ClientManager
-from typing import Optional
-    
-class FileRequest():
-    """文件请求
-    """
-    def __init__(self, url: str, headers: dict):
-        self.url = url
-        self.headers = headers
-        self.client: httpx.AsyncClient = ClientManager.get_client()
-        self.lock = asyncio.Lock()
-        self.response: Optional[httpx.Response] = None
-        
-    async def get_or_start_conn(self) -> httpx.Response:
-        async with self.lock:
-            if self.response is None:
-                self.response: httpx.Response = await self.client.stream("GET", self.url, headers=self.headers).__aenter__()
-                if self.response.status_code != 206:
-                    raise ValueError(f"Expected 206 response, got {self.response.status_code}")
-                
-                logger.debug(f"Connection started for {self.url}")
-                return self.response
-            else:
-                return self.response
-                
-    async def close_conn(self):
-        async with self.lock:
-            if self.response is not None:
-                await self.response.aclose()
-                logger.debug(f"Connection closed for {self.url}")
-                self.response = None
-                
-        
-class FileRequestManager():
-    """管理文件请求任务
+from ..models import CacheRangeStatus
+from typing import Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .CacheSystem import ChunksWriter
+
+class TaskManager():
+    """任务管理器
+    用于管理文件缓存写入任务，避免创建多个写入task
+    每个文件包含头尾两个任务, head和tail
+    {file_id: [ChunksWriter, ChunksWriter]}
     """
     def __init__(self):
-        self.requests = {}
+        self.tasks = {}
         self.lock = asyncio.Lock()
-        
-    async def get_or_create_request(self, file_id: str, headers: dict, url: str) -> FileRequest:
-        async with self.lock:
-            file_range = headers.get("Range").split('=')[1]
-            if file_id not in self.requests:
-                self.requests[file_id] = {}
-            
-            if file_range in self.requests[file_id]:
-                return self.requests[file_id][file_range]
-            
-            request = FileRequest(url, headers)
-            self.requests[file_id][file_range] = request
-            return request
-    
-    async def request_exists(self, file_id: str, headers: dict) -> bool:
-        async with self.lock:
-            file_range = headers.get("Range").split('=')[1]
-            return file_id in self.requests and file_range in self.requests[file_id]
-    
-    async def close_request(self, file_id: str, headers: dict):
-        """关闭该文件的请求
 
-        Args:
-            file_id (str): 文件ID
+    async def get_task(self, file_id: str, cache_range_status: CacheRangeStatus) -> Optional[asyncio.Task]:
+        """获取任务
         """
         async with self.lock:
-            file_range = headers.get("Range").split('=')[1]
-            if file_id in self.requests and file_range in self.requests[file_id]:
-                await self.requests[file_id][file_range].close_conn()
-                del self.requests[file_id][file_range]
-                if not self.requests[file_id]:
-                    del self.requests[file_id]
+            if file_id in self.tasks:
+                if cache_range_status is CacheRangeStatus.FULLY_CACHED_TAIL:
+                    return self.tasks[file_id][1]
+                else:
+                    return self.tasks[file_id][0]
+            else:
+                return None
+            
+    async def create_task(self, file_id: str, writer: 'ChunksWriter', cache_range_status: CacheRangeStatus):
+        """添加任务
+        """
+        async with self.lock:
+            if file_id not in self.tasks:
+                self.tasks[file_id] = {None, None}
+            if cache_range_status is CacheRangeStatus.FULLY_CACHED_TAIL:
+                self.tasks[file_id][1] = writer
+            else:
+                self.tasks[file_id][0] = writer
+            logger.debug(f"Task added for {file_id} with status {cache_range_status}")
+            logger.debug(f"Task list: {self.tasks}")
+
+    async def remove_task(self, file_id: str, cache_range_status: CacheRangeStatus):
+        """移除任务
+        """
+        async with self.lock:
+            if file_id in self.tasks:
+                if cache_range_status is CacheRangeStatus.FULLY_CACHED_TAIL:
+                    self.tasks[file_id][1] = None
+                else:
+                    self.tasks[file_id][0] = None
+                    
+                # 如果两个任务都完成，则删除任务
+                if self.tasks[file_id][0] is None and self.tasks[file_id][1] is None:
+                    del self.tasks[file_id]
+                    logger.debug(f"Task removed for {file_id} with status {cache_range_status}")
+
+                logger.debug(f"Task removed for {file_id} with status {cache_range_status}")
+                logger.debug(f"Task list: {self.tasks}")
+            else:
+                logger.debug(f"Task not found for {file_id} with status {cache_range_status}")
+                logger.debug(f"Task list: {self.tasks}")
+            
         
 class CacheManager():
     _cache_system: CacheSystem = None
-    _request_manager: FileRequest = None
     
     @classmethod
     def init(cls, root_dir: str):
@@ -92,11 +80,3 @@ class CacheManager():
     @classmethod
     def get_cache_system(cls) -> CacheSystem:
         return cls._cache_system
-    
-    @classmethod
-    def init_request_manager(cls):
-        cls._request_manager = FileRequestManager()
-    
-    @classmethod
-    def get_request_manager(cls) -> FileRequestManager:
-        return cls._request_manager

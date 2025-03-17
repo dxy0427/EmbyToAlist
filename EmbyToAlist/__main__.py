@@ -15,9 +15,7 @@ async def lifespan(app: fastapi.FastAPI):
     ClientManager.init_client()
     if CACHE_ENABLE:
         CacheManager.init(CACHE_PATH)
-    app.state.requests_client = httpx.AsyncClient()
     yield
-    await app.state.requests_client.aclose()
     await ClientManager.close_client()
 
 app = fastapi.FastAPI(lifespan=lifespan)

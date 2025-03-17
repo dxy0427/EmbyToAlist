@@ -50,29 +50,6 @@ def extract_api_key(request: fastapi.Request):
             if auth_header:
                 api_key = auth_header
     return api_key
-
-def validate_regex(word: str) -> bool:
-    """
-    验证用户输入是否为有效的正则表达式
-    """
-    try:
-        re.compile(word)
-        return True
-    except re.error:
-        return False
-
-def match_with_regex(pattern, target_string):
-    """
-    使用正则表达式匹配目标字符串
-    """
-    if validate_regex(pattern):
-        match = re.search(pattern, target_string)
-        if match:
-            return True
-        else:
-            return False
-    else:
-        raise ValueError("Invalid regex pattern")
             
 class RawLinkManager():
     """管理alist直链获取任务

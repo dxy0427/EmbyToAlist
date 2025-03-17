@@ -17,7 +17,7 @@ router = fastapi.APIRouter()
 @router.get('/videos/{item_id}/{filename}')
 @router.get('/emby/Videos/{item_id}/{filename}')
 @router.get('/emby/videos/{item_id}/{filename}')
-async def redirect(item_id, filename, request: fastapi.Request, background_tasks: fastapi.BackgroundTasks):
+async def redirect(item_id, filename, request: fastapi.Request):
     # Example: https://emby.example.com/emby/Videos/xxxxx/original.mp4?MediaSourceId=xxxxx&api_key=xxxxx
     
     api_key = extract_api_key(request)
@@ -96,7 +96,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
     if start_byte < cache_file_size:
         request_info.range_info.cache_range = (0, cache_file_size - 1)
         
-        if end_byte is None or end_byte < cache_file_size:
+        if end_byte is None or end_byte > cache_file_size:
             request_info.cache_range_status = CacheRangeStatus.PARTIALLY_CACHED
         else:
             request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED
@@ -143,8 +143,6 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
     response_headers['Content-Length'] = f'{response_end - response_start + 1}'
     
     if cache_exist:
-        source_request_headers['Range'] = f"bytes={cache_file_size}-{end_byte if end_byte is not None else ''}"
-        
         return await reverse_proxy(
             cache=cache_system.read_cache_file(request_info),
             request_header=source_request_headers,
@@ -153,8 +151,6 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
         )
         
     else:
-        source_request_headers['Range'] = f"bytes={start_byte}-{end_byte if end_byte is not None else ''}"
-        
         return await reverse_proxy(
             cache=None,
             request_header=source_request_headers,
