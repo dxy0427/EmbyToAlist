@@ -38,9 +38,11 @@ class ChunksWriter():
             if response.status_code != 206:
                 raise ValueError(f"Expected 206 response, got {response.status_code}")
             
-            async for chunk in response.iter_bytes(chunk_size):
+            async for chunk in response.aiter_bytes(chunk_size):
                 # 写入缓存文件
                 await self.queue.put(chunk)
+            
+            await self.queue.put(None)
             
     async def write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
         """写入缓存文件
@@ -59,14 +61,17 @@ class ChunksWriter():
             for data in self.cache_data:
                 yield data
         else:
-            while not self.queue.empty():
-                data = await self.queue.get()
-                self.cache_data.append(data)
-                yield data
+          while True:
+            data = await self.queue.get()  # 阻塞等待数据
+            if data is None:  # 如果收到结束标记则退出
                 self.queue.task_done()
+                break
+            self.cache_data.append(data)
+            yield data
+            self.queue.task_done() 
 
 class CacheSystem():
-    VERSION: str = "1.0.0"
+    VERSION: str = "1.0.1"
     def __init__(self, root_dir: str):
         self.root_dir: Path = Path(root_dir)
         self.cache_locks = WeakValueDictionary()
@@ -130,17 +135,18 @@ class CacheSystem():
         file_name = request_info.file_info.name
         cache_range_status = request_info.cache_range_status
         
-        if self.task_manager.get_task(file_name, cache_range_status) is not None:
-            return self.task_manager.get_task(file_name, cache_range_status)
+        task = await self.task_manager.get_task(file_name, cache_range_status)
+        if task is not None:
+            return task
         else:
             writer = ChunksWriter()
-            self.task_manager.create_task(file_name, writer, cache_range_status)
+            await self.task_manager.create_task(file_name, writer, cache_range_status)
             asyncio.create_task(self.write_cache_file(request_info))
             return writer
     
     async def write_cache_file(self, request_info: RequestInfo):
         # 后台缓存文件，sleep防止占用异步线程
-        asyncio.sleep(20)
+        await asyncio.sleep(20)
         subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
         cache_dir = self.root_dir / subdirname / dirname
         if not cache_dir.exists():

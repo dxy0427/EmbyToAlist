@@ -2,11 +2,10 @@ import asyncio
 
 from loguru import logger
 
-from .CacheSystem import CacheSystem
 from ..models import CacheRangeStatus
 from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
-    from .CacheSystem import ChunksWriter
+    from .CacheSystem import ChunksWriter, CacheSystem
 
 class TaskManager():
     """任务管理器
@@ -35,7 +34,7 @@ class TaskManager():
         """
         async with self.lock:
             if file_id not in self.tasks:
-                self.tasks[file_id] = {None, None}
+                self.tasks[file_id] = [None, None]
             if cache_range_status is CacheRangeStatus.FULLY_CACHED_TAIL:
                 self.tasks[file_id][1] = writer
             else:
@@ -66,17 +65,17 @@ class TaskManager():
             
         
 class CacheManager():
-    _cache_system: CacheSystem = None
+    _cache_system: 'CacheSystem' = None
     
     @classmethod
     def init(cls, root_dir: str):
         cls.init_cache(root_dir)
-        cls.init_request_manager()
     
     @classmethod
     def init_cache(cls, root_dir: str):
+        from .CacheSystem import CacheSystem
         cls._cache_system = CacheSystem(root_dir)
         
     @classmethod
-    def get_cache_system(cls) -> CacheSystem:
+    def get_cache_system(cls) -> 'CacheSystem':
         return cls._cache_system
