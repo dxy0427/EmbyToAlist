@@ -165,13 +165,44 @@ class CacheSystem():
             return writer
     
     async def write_cache_file(self, request_info: RequestInfo):
+        
+        async def precheck(cache_dir, start, end) -> Optional[Path]:
+            """
+            检查缓存文件是否有重叠的范围,或者者是否已经存在
+            
+            :param cache_dir: 缓存目录
+            :param start: 将要缓存的文件的起始点
+            :param end: 将要缓存的文件的结束点
+            :return: 重叠的缓存文件
+            """
+            for cache_file in cache_dir.iterdir():
+                if cache_file.is_file() and cache_file.name.startswith("cache_file"):
+                    start_point, end_point = map(int, cache_file.stem.split("_")[2:4])
+                    if start >= start_point and end <= end_point:
+                        return "already_exists"
+                    if start <= start_point and end >= end_point:
+                        logger.debug(f"Cache file overlaps: {cache_file}, deleting")
+                        aiofiles.os.remove(str(cache_file))
+            return "pass_check"
+    
         # 后台缓存文件，sleep防止占用异步线程
         await asyncio.sleep(20)
         subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
         cache_dir = self.root_dir / subdirname / dirname
         if not cache_dir.exists():
             cache_dir.mkdir(parents=True, exist_ok=True)
-    
+            
+        # 检查缓存文件是否有重叠的范围
+        check_result = await precheck(self, cache_dir, request_info.range_info.cache_range[0], request_info.range_info.cache_range[1])
+        if check_result == "already_exists":
+            logger.debug(f"Cache file already exists, skipping: {cache_dir}")
+            return
+        elif check_result == "pass_check":
+            logger.debug(f"Cache file passed check, continuing: {cache_dir}")
+        else:
+            logger.error(f"Cache file check failed: {cache_dir}")
+            return
+        
         cache_file_name = self.cache_file_name.format(start=request_info.range_info.cache_range[0], end=request_info.range_info.cache_range[1])
         
         chunk_writer = await self.get_writer(request_info)
@@ -182,9 +213,6 @@ class CacheSystem():
                     
         await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)
         logger.debug(f"Cache file written: {cache_file_name}")
-
-    def check_overlap(self, cache_dir, start, end) -> Path:
-        pass
     
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
         """
@@ -303,4 +331,4 @@ class CacheSystem():
     
     async def write_from_remote(self):
         pass
-    
+
