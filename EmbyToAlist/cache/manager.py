@@ -39,8 +39,6 @@ class TaskManager():
                 self.tasks[file_id][1] = writer
             else:
                 self.tasks[file_id][0] = writer
-            logger.debug(f"Task added for {file_id} with status {cache_range_status}")
-            logger.debug(f"Task list: {self.tasks}")
 
     async def remove_task(self, file_id: str, cache_range_status: CacheRangeStatus):
         """移除任务
@@ -57,8 +55,6 @@ class TaskManager():
                     del self.tasks[file_id]
                     logger.debug(f"Task removed for {file_id} with status {cache_range_status}")
 
-                logger.debug(f"Task removed for {file_id} with status {cache_range_status}")
-                logger.debug(f"Task list: {self.tasks}")
             else:
                 logger.debug(f"Task not found for {file_id} with status {cache_range_status}")
                 logger.debug(f"Task list: {self.tasks}")

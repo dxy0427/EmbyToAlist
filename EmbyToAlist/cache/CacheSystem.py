@@ -17,8 +17,10 @@ class ChunksWriter():
         self.queue = asyncio.Queue()
         self.task = None
         self.client = ClientManager.get_client()
-        self.cache_data = []
-        self.number_of_chunks = 0
+        self.cache_data = bytearray()
+        self.number_of_chunks = None
+        self.condition = asyncio.Condition()
+        self.completed = False
 
     async def _write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
         
@@ -34,16 +36,21 @@ class ChunksWriter():
             # 读取尾部
             request_header['Range'] = f"bytes={request_info.range_info.cache_range[0]}-"
 
+        logger.debug(f"Header of File Source Request: {request_header}")
+
         async with self.client.stream("GET", raw_url, headers=request_header) as response:
             if response.status_code != 206:
                 raise ValueError(f"Expected 206 response, got {response.status_code}")
             
             async for chunk in response.aiter_bytes(chunk_size):
                 # 写入缓存文件
-                await self.queue.put(chunk)
+                async with self.condition:
+                    self.cache_data.extend(chunk)
+                    self.condition.notify_all() 
             
-            await self.queue.put(None)
-            
+            async with self.condition:
+                self.completed = True
+                self.condition.notify_all()
     async def write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
         """写入缓存文件
         """
@@ -52,23 +59,36 @@ class ChunksWriter():
         else:
             logger.debug("Write task already exists, skipping")
             
-    async def read(self) -> AsyncGenerator[bytes, None]:
+    async def read(self, start: int, end: Optional[int] = None) -> AsyncGenerator[bytes, None]:
         """读取缓存文件
         如果cache data不为空，则直接返回
         否则从队列中读取数据，并将数据写入缓存文件
+
+        1. 如果请求的范围内数据已缓存，则直接返回对应数据
+        2. 如果请求结束位置尚未缓存且缓存还未完成，则等待数据到达；
+        3. 如果请求的结束位置超出目标缓存，则在缓存写入完成后返回实际可用数据。
+
+        :param start: int 请求开始字节
+        :param end: int 请求结尾字节，None表示最后
+        
+        :return 文件异步生成器
         """
-        if self.cache_data:
-            for data in self.cache_data:
-                yield data
-        else:
-          while True:
-            data = await self.queue.get()  # 阻塞等待数据
-            if data is None:  # 如果收到结束标记则退出
-                self.queue.task_done()
+        # 当 end 为 None 时，设置为无限大
+        if end is None:
+            end = float("inf")
+        current_index = start
+        while current_index < end:
+            async with self.condition:
+                await self.condition.wait_for(lambda: len(self.cache_data) > current_index or self.completed)
+                new_end = min(end, len(self.cache_data))
+                
+            if new_end > current_index:
+                yield bytes(self.cache_data[current_index:new_end])
+                current_index = new_end
+            
+            # 如果写入已完成且没有更多数据，则退出循环
+            if self.completed and current_index >= len(self.cache_data):
                 break
-            self.cache_data.append(data)
-            yield data
-            self.queue.task_done() 
 
 class CacheSystem():
     VERSION: str = "1.0.1"
@@ -132,15 +152,15 @@ class CacheSystem():
                 exit(1)
                 
     async def get_writer(self, request_info: RequestInfo) -> ChunksWriter:
-        file_name = request_info.file_info.name
+        file_id = request_info.file_info.id
         cache_range_status = request_info.cache_range_status
         
-        task = await self.task_manager.get_task(file_name, cache_range_status)
+        task = await self.task_manager.get_task(file_id, cache_range_status)
         if task is not None:
             return task
         else:
             writer = ChunksWriter()
-            await self.task_manager.create_task(file_name, writer, cache_range_status)
+            await self.task_manager.create_task(file_id, writer, cache_range_status)
             asyncio.create_task(self.write_cache_file(request_info))
             return writer
     
@@ -157,11 +177,14 @@ class CacheSystem():
         chunk_writer = await self.get_writer(request_info)
         async with self._get_cache_lock(subdirname, dirname):
             async with aiofiles.open(cache_dir / cache_file_name, 'wb') as f:
-                async for chunk in chunk_writer.read():
+                async for chunk in chunk_writer.read(0, None):
                     await f.write(chunk)
                     
-        await self.task_manager.remove_task(request_info.file_info.name, request_info.cache_range_status)
+        await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)
         logger.debug(f"Cache file written: {cache_file_name}")
+
+    def check_overlap(self, cache_dir, start, end) -> Path:
+        pass
     
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
         """
@@ -199,13 +222,17 @@ class CacheSystem():
             if cache_file.is_file():
                 if cache_file.name.startswith("cache_file"):
                     start, end = map(int, cache_file.stem.split("_")[2:4])
-                    if self.verify_cache_file(file_info, start, end):
-                        if start <= range_info.request_range[0] <= end:
-                            return True
+                    if start <= range_info.request_range[0] <= end:
+                        return True
                     else:
-                        logger.warning(f"Invalid cache file: {cache_file}")
-                        cache_file.unlink()
                         return False
+                    # if self.verify_cache_file(file_info, start, end):
+                    #     if start <= range_info.request_range[0] <= end:
+                    #         return True
+                    # else:
+                    #     logger.warning(f"Invalid cache file: {cache_file}")
+                    #     cache_file.unlink()
+                    #     return False
         
         logger.debug(f"No valid cache file found for {file_info.path}")
         return False

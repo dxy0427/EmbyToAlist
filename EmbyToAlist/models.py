@@ -48,6 +48,7 @@ class TVShowsInfo:
 
 @dataclass
 class FileInfo:
+    id: str
     path: str
     bitrate: int
     size: int

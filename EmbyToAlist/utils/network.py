@@ -49,8 +49,10 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                     
                     writer: ChunksWriter = await cache_system.get_writer(request_info)
                     await writer.write(request_info, raw_url, request_header)
+
+                    start, end = request_info.range_info.response_range
                     
-                    async for chunk in writer.read():
+                    async for chunk in writer.read(start, end):
                         yield chunk
                         
             logger.info("Cache exhausted, breaking the connection")

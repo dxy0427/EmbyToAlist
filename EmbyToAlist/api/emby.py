@@ -133,6 +133,7 @@ async def get_file_info(item_id, api_key, media_source_id, media_info_api=None) 
         all_source = []
         for i in media_info['MediaSources']:
             all_source.append(FileInfo(
+                id=i.get('Id'),
                 path=transform_file_path(i.get('Path')),
                 bitrate=i.get('Bitrate', 27962026),
                 size=i.get('Size', 0),
@@ -148,6 +149,7 @@ async def get_file_info(item_id, api_key, media_source_id, media_info_api=None) 
     for i in media_info['MediaSources']:
         if i['Id'] == media_source_id:
             return FileInfo(
+                id = i.get('Id'),
                 path=transform_file_path(i.get('Path')),
                 bitrate=i.get('Bitrate', 27962026),
                 size=i.get('Size', 0),

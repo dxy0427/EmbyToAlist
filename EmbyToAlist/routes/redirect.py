@@ -94,7 +94,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
     # 应该走缓存的情况1：请求文件开头
     cache_file_size = file_info.cache_file_size
     if start_byte < cache_file_size:
-        request_info.range_info.cache_range = (0, cache_file_size - 1)
+        request_info.range_info.cache_range = (0, cache_file_size)
         
         if end_byte is None or end_byte > cache_file_size:
             request_info.cache_range_status = CacheRangeStatus.PARTIALLY_CACHED
