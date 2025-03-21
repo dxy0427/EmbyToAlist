@@ -78,6 +78,12 @@ class ChunksWriter():
         # 当 end 为 None 时，设置为无限大
         if end is None:
             end = float("inf")
+        
+        # 针对请求末尾的情况
+        if start > 0 and (end - start) < 2 * 1024 * 1024:
+            start = 0
+            end = end - start
+        
         current_index = start
         while current_index < end:
             async with self.condition:
