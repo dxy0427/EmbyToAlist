@@ -118,6 +118,8 @@ async def redirect(item_id, filename, request: fastapi.Request):
                 resp_header = response_headers_template.copy()
                 resp_header['Content-Type'] = get_content_type(file_info.name)
                 resp_header['X-EmbyToAList-Cache'] = 'Hit'
+                resp_header['Content-Length'] = f'{file_info.size - start_byte}'
+                resp_header['Content-Range'] = f"bytes {start_byte}-{file_info.size - 1}/{file_info.size}"
                 return fastapi.responses.StreamingResponse(
                     cache_system.read_cache_file(request_info),
                     headers=resp_header,

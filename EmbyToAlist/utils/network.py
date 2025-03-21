@@ -45,7 +45,6 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                     raw_url = await raw_link_manager.get_raw_url()
     
                     request_header['host'] = raw_url.split('/')[2]
-                    logger.debug(f"Requesting {raw_url} with headers {request_header}")
                     
                     writer: ChunksWriter = await cache_system.get_writer(request_info)
                     await writer.write(request_info, raw_url, request_header)
@@ -55,9 +54,8 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                     async for chunk in writer.read(start, end):
                         yield chunk
                         
-            logger.info("Cache exhausted, breaking the connection")
-            
             if FORCE_CLIENT_RECONNECT:
+                logger.info("Cache exhausted, breaking the connection")
                 raise ForcedReconnectError()
                     
         except ForcedReconnectError as e:

@@ -24,8 +24,8 @@ class ChunksWriter():
 
     async def _write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
         
-        # 每个chunk 5MB
-        chunk_size = 5 * 1024 * 1024
+        # 每个chunk 2MB
+        chunk_size = 2 * 1024 * 1024
         cache_end = request_info.file_info.cache_file_size
         self.number_of_chunks = ((cache_end + chunk_size) // chunk_size) + 1
         
@@ -58,6 +58,7 @@ class ChunksWriter():
             self.task = asyncio.create_task(self._write(request_info, raw_url, request_header))
         else:
             logger.debug("Write task already exists, skipping")
+            return
             
     async def read(self, start: int, end: Optional[int] = None) -> AsyncGenerator[bytes, None]:
         """读取缓存文件
@@ -193,7 +194,7 @@ class CacheSystem():
             cache_dir.mkdir(parents=True, exist_ok=True)
             
         # 检查缓存文件是否有重叠的范围
-        check_result = await precheck(self, cache_dir, request_info.range_info.cache_range[0], request_info.range_info.cache_range[1])
+        check_result = await precheck(cache_dir, request_info.range_info.cache_range[0], request_info.range_info.cache_range[1])
         if check_result == "already_exists":
             logger.debug(f"Cache file already exists, skipping: {cache_dir}")
             return
@@ -252,8 +253,7 @@ class CacheSystem():
                     start, end = map(int, cache_file.stem.split("_")[2:4])
                     if start <= range_info.request_range[0] <= end:
                         return True
-                    else:
-                        return False
+                    continue
                     # if self.verify_cache_file(file_info, start, end):
                     #     if start <= range_info.request_range[0] <= end:
                     #         return True
@@ -329,6 +329,3 @@ class CacheSystem():
         except Exception as e:
             logger.error(f"Unexpected error occurred while reading file: {e}")
     
-    async def write_from_remote(self):
-        pass
-
