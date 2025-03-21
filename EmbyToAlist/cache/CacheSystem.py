@@ -4,6 +4,7 @@ from pathlib import Path
 from weakref import WeakValueDictionary
 
 import aiofiles
+import aiofiles.os
 from loguru import logger
 
 from ..models import FileInfo, RequestInfo, CacheRangeStatus
@@ -183,7 +184,7 @@ class CacheSystem():
                         return "already_exists"
                     if start <= start_point and end >= end_point:
                         logger.debug(f"Cache file overlaps: {cache_file}, deleting")
-                        aiofiles.os.remove(str(cache_file))
+                        await aiofiles.os.remove(str(cache_file))
             return "pass_check"
     
         # 后台缓存文件，sleep防止占用异步线程

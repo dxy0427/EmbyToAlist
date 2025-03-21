@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 
 import fastapi
-import httpx
 import uvicorn
 
 from .config import LOG_LEVEL, CACHE_ENABLE, CACHE_PATH
