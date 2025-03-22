@@ -20,3 +20,14 @@ CACHE_PATH = env.str("CACHE_PATH", default="./cache")
 FORCE_CLIENT_RECONNECT = env.bool("FORCE_CLIENT_RECONNECT", default=False)
 
 LOG_LEVEL = env.str("LOG_LEVEL", default="info").lower()
+
+# ADVANCED CONFIGURATION 高级配置
+INITIAL_CACHE_SIZE_OF_TAIL = 2*1024*1024
+"""初始末尾缓存大小，会经过裁切，需要保证请求Range在文件末尾的Cache Size内"""
+
+CHUNK_SIZE_OF_CHUNKSWITER = 2*1024*1024
+"""ChunksWriter实例中的缓存块大小，默认为2MB"""
+
+# EXPERIMENTAL CONFIGURATION 实验性配置
+MEMORY_CACHE_ONLY = False
+"""是否只使用内存缓存，默认False"""

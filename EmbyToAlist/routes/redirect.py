@@ -1,7 +1,7 @@
 import fastapi
 from loguru import logger
 
-from ..config import CACHE_ENABLE
+from ..config import CACHE_ENABLE, INITIAL_CACHE_SIZE_OF_TAIL
 from ..models import FileInfo, ItemInfo, RequestInfo, CacheRangeStatus, RangeInfo, response_headers_template
 from ..utils.path import should_redirect_to_alist
 from ..utils.helpers import extract_api_key, get_content_type, RawLinkManager
@@ -111,9 +111,10 @@ async def redirect(item_id, filename, request: fastapi.Request):
                 )
             
     # 应该走缓存的情况2：请求文件末尾
-    elif file_info.size - start_byte < 2*1024*1024:
+    elif file_info.size - start_byte < INITIAL_CACHE_SIZE_OF_TAIL:
         request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
-        request_info.range_info.cache_range = (start_byte, file_info.size - 1)
+        # 默认初始缓存 2MB，之后根据请求头裁切
+        request_info.range_info.cache_range = (file_info.size - 1 - INITIAL_CACHE_SIZE_OF_TAIL, file_info.size -1)
         if cache_exist:
                 resp_header = response_headers_template.copy()
                 resp_header['Content-Type'] = get_content_type(file_info.name)

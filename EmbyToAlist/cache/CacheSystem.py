@@ -5,8 +5,10 @@ from weakref import WeakValueDictionary
 
 import aiofiles
 import aiofiles.os
+from fastapi import HTTPException
 from loguru import logger
 
+from ..config import CHUNK_SIZE_OF_CHUNKSWITER, MEMORY_CACHE_ONLY
 from ..models import FileInfo, RequestInfo, CacheRangeStatus
 from .manager import TaskManager
 from ..utils.common import ClientManager
@@ -29,6 +31,15 @@ class ChunksWriter():
         
         self.cache_range_start: int = None
         self.cache_range_end: int = None
+        self.cache_range_status: CacheRangeStatus = None
+        
+        # 针对末尾缓存的情况
+        # 播放器通常在请求末尾时适当的增加请求范围
+        # 所以我们需要缓存最大的请求范围
+        # 例如第一次请求范围为 70000-80000
+        # 第二次请求范围为 60000-80000
+        # 则我们需要缓存 60000-80000
+        self.smallest_request_start_point: int = float("inf")
 
     async def _write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
         """异步写入缓存文件
@@ -36,12 +47,9 @@ class ChunksWriter():
         :param request_info: 请求信息
         :param raw_url: 直链URL
         :param request_header: 请求头
-        """ 
-        self.cache_range_end = request_info.range_info.cache_range[1]
-        self.cache_range_start = request_info.range_info.cache_range[0]
-        
+        """
         # 每个chunk 2MB
-        chunk_size = 2 * 1024 * 1024
+        chunk_size = CHUNK_SIZE_OF_CHUNKSWITER
         self.number_of_chunks = ((self.cache_range_end + chunk_size) // chunk_size) + 1
         
         # 修正请求头
@@ -67,6 +75,7 @@ class ChunksWriter():
             async with self.condition:
                 self.completed = True
                 self.condition.notify_all()
+                
     async def write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
         """创建写入异步任务
         
@@ -75,6 +84,11 @@ class ChunksWriter():
         :param request_header: 请求头
         """
         if self.task is None:
+            # initialize cache data
+            self.cache_range_end = request_info.range_info.cache_range[1]
+            self.cache_range_start = request_info.range_info.cache_range[0]
+            self.cache_range_status = request_info.cache_range_status
+            
             self.task = asyncio.create_task(self._write(request_info, raw_url, request_header))
         else:
             logger.debug("Write task already exists, skipping")
@@ -99,10 +113,22 @@ class ChunksWriter():
             end = float("inf")
         
         # 针对请求末尾的情况
-        if start > 0 and (end - start) < 2 * 1024 * 1024:
-            start = 0
-            end = end - start
-        
+        if CacheRangeStatus == CacheRangeStatus.FULLY_CACHED_TAIL:
+            if start < self.smallest_request_start_point:
+                self.smallest_request_start_point = start
+            
+            # 修正 start 和 end 范围
+            # 假设cache range : 70000-80000
+            # start: 75000, end: 80000   
+            # 修正为 start: 5000, end: 10000
+            if start >= self.cache_range_start:
+                start = start - self.cache_range_start
+                end = end - self.cache_range_start
+            else:
+                logger.error(f"Invalid start point: {start}, cache range start: {self.cache_range_start}")
+                logger.error(f"请尝试提高末尾缓存的阈值")
+                raise HTTPException(status_code=500, detail="Invalid start point")
+            
         current_index = start
         while current_index < end:
             async with self.condition:
@@ -214,6 +240,12 @@ class CacheSystem():
     
         # 后台缓存文件，sleep防止占用异步线程
         await asyncio.sleep(20)
+        
+        if MEMORY_CACHE_ONLY:
+            await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)
+            logger.debug("Experimental feature: MEMORY_CACHE_ONLY is enabled, skipping cache file writing")
+            return
+        
         subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
         cache_dir = self.root_dir / subdirname / dirname
         if not cache_dir.exists():
@@ -230,12 +262,19 @@ class CacheSystem():
             logger.error(f"Cache file check failed: {cache_dir}")
             return
         
-        cache_file_name = self.cache_file_name.format(start=request_info.range_info.cache_range[0], end=request_info.range_info.cache_range[1])
-        
         chunk_writer = await self.get_writer(request_info)
+        
+        file_start = chunk_writer.smallest_request_start_point if chunk_writer.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else request_info.range_info.cache_range[0]
+        file_end = request_info.range_info.cache_range[1]
+        
+        cache_file_name = self.cache_file_name.format(
+            start=file_start,
+            end=file_end
+            )
+        
         async with self._get_cache_lock(subdirname, dirname):
             async with aiofiles.open(cache_dir / cache_file_name, 'wb') as f:
-                async for chunk in chunk_writer.read(0, None):
+                async for chunk in chunk_writer.read(file_start, file_end):
                     await f.write(chunk)
                     
         await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)
