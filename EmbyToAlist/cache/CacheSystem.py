@@ -12,27 +12,42 @@ from .manager import TaskManager
 from ..utils.common import ClientManager
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
-    pass
+    import httpx
+    
 class ChunksWriter():
     def __init__(self):
+        self.client: httpx.AsyncClient = ClientManager.get_client()
+        
         self.queue = asyncio.Queue()
-        self.task = None
-        self.client = ClientManager.get_client()
         self.cache_data = bytearray()
-        self.number_of_chunks = None
+        
+        self.task: asyncio.Task = None
+        self.number_of_chunks: int = None
+        
         self.condition = asyncio.Condition()
-        self.completed = False
+        self.completed: bool = False
+        
+        self.cache_range_start: int = None
+        self.cache_range_end: int = None
 
     async def _write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
+        """异步写入缓存文件
+        
+        :param request_info: 请求信息
+        :param raw_url: 直链URL
+        :param request_header: 请求头
+        """ 
+        self.cache_range_end = request_info.range_info.cache_range[1]
+        self.cache_range_start = request_info.range_info.cache_range[0]
         
         # 每个chunk 2MB
         chunk_size = 2 * 1024 * 1024
-        cache_end = request_info.file_info.cache_file_size
-        self.number_of_chunks = ((cache_end + chunk_size) // chunk_size) + 1
+        self.number_of_chunks = ((self.cache_range_end + chunk_size) // chunk_size) + 1
         
-        if request_info.range_info.cache_range[0] == 0:
+        # 修正请求头
+        if self.cache_range_start == 0:
             # 读取头部
-            request_header['Range'] = f"bytes=0-{cache_end+chunk_size}"
+            request_header['Range'] = f"bytes=0-{self.cache_range_end+chunk_size}"
         else:
             # 读取尾部
             request_header['Range'] = f"bytes={request_info.range_info.cache_range[0]}-"
@@ -53,7 +68,11 @@ class ChunksWriter():
                 self.completed = True
                 self.condition.notify_all()
     async def write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
-        """写入缓存文件
+        """创建写入异步任务
+        
+        :param request_info: 请求信息
+        :param raw_url: 直链URL
+        :param request_header: 请求头
         """
         if self.task is None:
             self.task = asyncio.create_task(self._write(request_info, raw_url, request_header))
@@ -105,7 +124,7 @@ class CacheSystem():
         self.cache_locks = WeakValueDictionary()
         self.condition = asyncio.Condition()
         self.cache_file_name = "cache_file_{start}_{end}"
-        self.client = ClientManager.get_client()
+        self.client: httpx.AsyncClient = ClientManager.get_client()
         self.task_manager = TaskManager()
         self._initialize()
         

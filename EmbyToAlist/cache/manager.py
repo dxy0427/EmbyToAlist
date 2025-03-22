@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 class TaskManager():
     """任务管理器
-    用于管理文件缓存写入任务，避免创建多个写入task
+    用于管理ChunksWriter实例，避免创建多个写入task
     每个文件包含头尾两个任务, head和tail
     {file_id: [ChunksWriter, ChunksWriter]}
     """
@@ -18,7 +18,12 @@ class TaskManager():
         self.lock = asyncio.Lock()
 
     async def get_task(self, file_id: str, cache_range_status: CacheRangeStatus) -> Optional[asyncio.Task]:
-        """获取任务
+        """获取任务，没有任务则返回None
+        
+        :param file_id: 文件ID
+        :param cache_range_status: 缓存范围状态
+        
+        :return: 任务对象或None
         """
         async with self.lock:
             if file_id in self.tasks:
@@ -31,6 +36,10 @@ class TaskManager():
             
     async def create_task(self, file_id: str, writer: 'ChunksWriter', cache_range_status: CacheRangeStatus):
         """添加任务
+        
+        :param file_id: 文件ID
+        :param writer: ChunksWriter实例
+        :param cache_range_status: 缓存范围状态
         """
         async with self.lock:
             if file_id not in self.tasks:
@@ -42,6 +51,9 @@ class TaskManager():
 
     async def remove_task(self, file_id: str, cache_range_status: CacheRangeStatus):
         """移除任务
+        
+        :param file_id: 文件ID
+        :param cache_range_status: 缓存范围状态
         """
         async with self.lock:
             if file_id in self.tasks:
