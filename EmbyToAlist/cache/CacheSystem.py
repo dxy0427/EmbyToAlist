@@ -111,9 +111,11 @@ class ChunksWriter():
         # 当 end 为 None 时，设置为无限大
         if end is None:
             end = float("inf")
+        else:
+            end = end + 1
         
         # 针对请求末尾的情况
-        if CacheRangeStatus == CacheRangeStatus.FULLY_CACHED_TAIL:
+        if self.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL:
             if start < self.smallest_request_start_point:
                 self.smallest_request_start_point = start
             
@@ -123,6 +125,7 @@ class ChunksWriter():
             # 修正为 start: 5000, end: 10000
             if start >= self.cache_range_start:
                 start = start - self.cache_range_start
+                # http 范围请求的结束位置是包含的，所以需要加1
                 end = end - self.cache_range_start
             else:
                 logger.error(f"Invalid start point: {start}, cache range start: {self.cache_range_start}")

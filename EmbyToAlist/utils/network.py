@@ -56,9 +56,11 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                         data_read += len(chunk)
                         yield chunk
                     
-                    logger.debug(f"Expected data read: {request_info.range_info.cache_range[1] - request_info.range_info.cache_range[0]}, Actual data read: {data_read}")
+                    logger.debug(f"Expected data read: {end - start + 1}, Actual data read: {data_read}")
                     logger.debug(f"Read from {start} to {end}")
-            if FORCE_CLIENT_RECONNECT:
+                    
+            # 不是末尾则打断
+            if FORCE_CLIENT_RECONNECT and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
                 logger.info("Cache exhausted, breaking the connection")
                 raise ForcedReconnectError()
                     
