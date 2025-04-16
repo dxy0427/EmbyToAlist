@@ -1,7 +1,7 @@
 import fastapi
 from loguru import logger
 
-from ..config import CACHE_ENABLE, INITIAL_CACHE_SIZE_OF_TAIL
+from ..config import CACHE_ENABLE, INITIAL_CACHE_SIZE_OF_TAIL, HIGH_COMPAT_MEDIA_CLIENTS, LOW_COMPAT_MEDIA_CLIENTS
 from ..models import FileInfo, ItemInfo, RequestInfo, CacheRangeStatus, RangeInfo, response_headers_template
 from ..utils.path import should_redirect_to_alist, transform_file_path
 from ..utils.helpers import extract_api_key, get_content_type, RawLinkManager
@@ -40,7 +40,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
         # 拼接完整的URL，如果query为空则不加问号
         redirected_url = f"{host_url}preventRedirect{request.url.path}{'?' + request.url.query if request.url.query else ''}"
         logger.info("Redirected Url: " + redirected_url)
-        return fastapi.responses.RedirectResponse(url=redirected_url, status_code=302)
+        return fastapi.responses.RedirectResponse(url=redirected_url, status_code=302)        
     
     # transform file path to alist path
     if not file_info.is_strm:
@@ -54,7 +54,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
         return await temporary_redirect(
             raw_link_manager=raw_link_manager,
         )
-    
+
     range_header = request.headers.get('Range')
     if not range_header:
         logger.debug("Range header not found")
@@ -92,6 +92,12 @@ async def redirect(item_id, filename, request: fastapi.Request):
         range_info=range_info,
     )
     
+    if any(player in request.headers.get('User-Agent').lower() for player in LOW_COMPAT_MEDIA_CLIENTS):
+        request_info.is_LOW_COMPAT_MEDIA_CLIENTS = True
+        return await temporary_redirect(
+            raw_link_manager=raw_link_manager,
+        )
+    
     cache_system = CacheManager.get_cache_system()
     cache_exist = cache_system.get_cache_status(request_info)
     
@@ -101,8 +107,9 @@ async def redirect(item_id, filename, request: fastapi.Request):
         request_info.range_info.cache_range = (0, cache_file_size)
         
         # check video player
-        if 'mpv' in request.headers.get('User-Agent').lower():
-            request_info.perfect_media_player = True
+        # if 'mpv' in request.headers.get('User-Agent').lower():
+        if any(player in request.headers.get('User-Agent').lower() for player in HIGH_COMPAT_MEDIA_CLIENTS):
+            request_info.is_HIGH_COMPAT_MEDIA_CLIENTS = True
             response_end = cache_file_size - 1
         else:
             response_end = file_info.size - 1

@@ -31,3 +31,8 @@ CHUNK_SIZE_OF_CHUNKSWITER = env.int("CHUNK_SIZE_OF_CHUNKSWITER", default=200*102
 # EXPERIMENTAL CONFIGURATION 实验性配置
 MEMORY_CACHE_ONLY = env.bool("MEMORY_CACHE_ONLY", default=False)
 """是否只使用内存缓存，默认False"""
+
+HIGH_COMPAT_MEDIA_CLIENTS = env.list("HIGH_COMPAT_MEDIA_CLIENTS", subcast=str, default=["mpv"])
+"""对Range请求支持较好的播放器列表，默认mpv"""
+LOW_COMPAT_MEDIA_CLIENTS = env.list("LOW_COMPAT_MEDIA_CLIENTS", subcast=str, default=["vlc"])
+"""对Range请求支持较差的播放器列表，默认vlc，当前播放器列表会尝试使用其他缓存策略"""
