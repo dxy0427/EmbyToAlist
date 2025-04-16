@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     import httpx
     
 class ChunksWriter():
-    def __init__(self):
+    def __init__(self, request_info: RequestInfo, request_header: dict):
         self.client: httpx.AsyncClient = ClientManager.get_client()
         
         self.queue = asyncio.Queue()
@@ -29,9 +29,11 @@ class ChunksWriter():
         self.condition = asyncio.Condition()
         self.completed: bool = False
         
-        self.cache_range_start: int = None
-        self.cache_range_end: int = None
-        self.cache_range_status: CacheRangeStatus = None
+        # initialize cache data
+        self.cache_range_end: int = request_info.range_info.cache_range[1]
+        self.cache_range_start: int = request_info.range_info.cache_range[0]
+        self.cache_range_status: CacheRangeStatus = request_info.cache_range_status
+        self.request_header: dict = request_header
         
         # 针对末尾缓存的情况
         # 播放器通常在请求末尾时适当的增加请求范围
@@ -41,12 +43,10 @@ class ChunksWriter():
         # 则我们需要缓存 60000-80000
         self.smallest_request_start_point: int = float("inf")
 
-    async def _write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
+    async def _write(self, raw_url: str):
         """异步写入缓存文件
         
-        :param request_info: 请求信息
         :param raw_url: 直链URL
-        :param request_header: 请求头
         """
         # 每个chunk 2MB
         chunk_size = CHUNK_SIZE_OF_CHUNKSWITER
@@ -55,14 +55,14 @@ class ChunksWriter():
         # 修正请求头
         if self.cache_range_start == 0:
             # 读取头部
-            request_header['Range'] = f"bytes=0-{self.cache_range_end+chunk_size}"
+            self.request_header['Range'] = f"bytes=0-{self.cache_range_end+chunk_size}"
         else:
             # 读取尾部
-            request_header['Range'] = f"bytes={request_info.range_info.cache_range[0]}-"
+            self.request_header['Range'] = f"bytes={self.cache_range_start}-"
 
-        logger.debug(f"Header of File Source Request: {request_header}")
+        logger.debug(f"Header of File Source Request: {self.request_header}")
 
-        async with self.client.stream("GET", raw_url, headers=request_header) as response:
+        async with self.client.stream("GET", raw_url, headers=self.request_header) as response:
             if response.status_code != 206:
                 raise ValueError(f"Expected 206 response, got {response.status_code}")
             
@@ -76,20 +76,13 @@ class ChunksWriter():
                 self.completed = True
                 self.condition.notify_all()
                 
-    async def write(self, request_info: RequestInfo, raw_url: str, request_header: dict):
+    async def write(self, raw_url: str):
         """创建写入异步任务
         
-        :param request_info: 请求信息
         :param raw_url: 直链URL
-        :param request_header: 请求头
         """
         if self.task is None:
-            # initialize cache data
-            self.cache_range_end = request_info.range_info.cache_range[1]
-            self.cache_range_start = request_info.range_info.cache_range[0]
-            self.cache_range_status = request_info.cache_range_status
-            
-            self.task = asyncio.create_task(self._write(request_info, raw_url, request_header))
+            self.task = asyncio.create_task(self._write(raw_url))
         else:
             logger.debug("Write task already exists, skipping")
             return
@@ -207,7 +200,7 @@ class CacheSystem():
                 logger.warning("Please remove the cache directory")
                 exit(1)
                 
-    async def get_writer(self, request_info: RequestInfo) -> ChunksWriter:
+    async def get_writer(self, request_info: RequestInfo, request_header: dict) -> ChunksWriter:
         file_id = request_info.file_info.id
         cache_range_status = request_info.cache_range_status
         
@@ -215,11 +208,44 @@ class CacheSystem():
         if task is not None:
             return task
         else:
-            writer = ChunksWriter()
+            writer = ChunksWriter(request_info, request_header)
             await self.task_manager.create_task(file_id, writer, cache_range_status)
+            
+            if self.task_manager.get_task(file_id, CacheRangeStatus.FULLY_CACHED_TAIL) is None:
+                # 预热尾部缓存
+                await self.warm_up_tail_cache(request_info, request_header)
+                
             asyncio.create_task(self.write_cache_file(request_info))
             return writer
     
+    async def warm_up_tail_cache(self, request_info: RequestInfo, request_header: dict):
+        """
+        预热尾部缓存
+        
+        :param request_info: 请求信息
+        :param request_header: 请求头
+        """
+        # 定义缓存参数
+        request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
+        request_info.range_info.cache_range = (
+            request_info.file_info.size - 1 - CHUNK_SIZE_OF_CHUNKSWITER, 
+            request_info.file_info.size - 1
+            )
+        
+        request_info.range_info.response_range = (
+            request_info.range_info.request_range[0],
+            request_info.file_info.size - 1
+            )
+        
+        # 防止异步中的竞争条件
+        task = await self.task_manager.get_task(request_info.file_info.id, request_info.cache_range_status)
+        if task is not None:
+            logger.debug("Warm up tail cache task already exists, skipping")
+            return
+        writer = ChunksWriter(request_info, request_header)
+        await self.task_manager.create_task(request_info.file_info.id, writer, request_info.cache_range_status)
+        await writer.write(request_info.raw_link_manager.get_raw_url())
+        
     async def write_cache_file(self, request_info: RequestInfo):
         
         async def precheck(cache_dir, start, end) -> Optional[Path]:

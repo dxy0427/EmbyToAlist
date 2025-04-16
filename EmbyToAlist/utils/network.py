@@ -46,8 +46,8 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
     
                     request_header['host'] = raw_url.split('/')[2]
                     
-                    writer: ChunksWriter = await cache_system.get_writer(request_info)
-                    await writer.write(request_info, raw_url, request_header)
+                    writer: ChunksWriter = await cache_system.get_writer(request_info, request_header)
+                    await writer.write(raw_url)
 
                     start, end = request_info.range_info.response_range
                    

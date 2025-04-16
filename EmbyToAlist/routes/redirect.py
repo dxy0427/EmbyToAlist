@@ -124,7 +124,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
     # 应该走缓存的情况2：请求文件末尾
     elif file_info.size - start_byte < INITIAL_CACHE_SIZE_OF_TAIL:
         request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
-        # 默认初始缓存 2MB，之后根据请求头裁切
+        # 默认初始缓存 1MB，之后根据请求头裁切
         request_info.range_info.cache_range = (file_info.size - 1 - INITIAL_CACHE_SIZE_OF_TAIL, file_info.size -1)
         if cache_exist:
                 resp_header = response_headers_template.copy()

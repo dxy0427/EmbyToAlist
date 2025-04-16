@@ -25,7 +25,7 @@ LOG_LEVEL = env.str("LOG_LEVEL", default="info").lower()
 INITIAL_CACHE_SIZE_OF_TAIL = env.int("INITIAL_CACHE_SIZE_OF_TAIL", default=1*1024*1024)
 """初始末尾缓存大小，会经过裁切，需要保证请求Range在文件末尾的Cache Size内"""
 
-CHUNK_SIZE_OF_CHUNKSWITER = env.int("CHUNK_SIZE_OF_CHUNKSWITER", default=2*1024*1024)
+CHUNK_SIZE_OF_CHUNKSWITER = env.int("CHUNK_SIZE_OF_CHUNKSWITER", default=200*1024)
 """ChunksWriter实例中的缓存块大小，默认为2MB"""
 
 # EXPERIMENTAL CONFIGURATION 实验性配置
