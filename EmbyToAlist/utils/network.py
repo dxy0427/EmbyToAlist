@@ -51,10 +51,15 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
 
                     start, end = request_info.range_info.response_range
                    
-                    data_read = 0 
-                    async for chunk in writer.read(start, end):
-                        data_read += len(chunk)
-                        yield chunk
+                    data_read = 0
+                    if not request_info.perfect_media_player and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
+                        async for chunk in writer.read(start, None):
+                            data_read += len(chunk)
+                            yield chunk
+                    else:
+                        async for chunk in writer.read(start, end):
+                            data_read += len(chunk)
+                            yield chunk
                     
                     logger.debug(f"Expected data read: {end - start + 1}, Actual data read: {data_read}")
                     logger.debug(f"Read from {start} to {end}")
