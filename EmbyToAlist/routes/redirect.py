@@ -104,7 +104,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
             request_info.perfect_media_player = True
             response_end = cache_file_size - 1
         else:
-            response_end = end_byte
+            response_end = file_info.size - 1
             
         if end_byte is None or end_byte > cache_file_size:
             request_info.cache_range_status = CacheRangeStatus.PARTIALLY_CACHED

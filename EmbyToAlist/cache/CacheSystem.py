@@ -211,7 +211,7 @@ class CacheSystem():
             writer = ChunksWriter(request_info, request_header)
             await self.task_manager.create_task(file_id, writer, cache_range_status)
             
-            if self.task_manager.get_task(file_id, CacheRangeStatus.FULLY_CACHED_TAIL) is None:
+            if await self.task_manager.get_task(file_id, CacheRangeStatus.FULLY_CACHED_TAIL) is None:
                 # 预热尾部缓存
                 await self.warm_up_tail_cache(request_info, request_header)
                 
