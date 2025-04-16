@@ -24,6 +24,7 @@ class ChunksWriter():
         self.cache_data = bytearray()
         
         self.task: asyncio.Task = None
+        self.cache_size: int = 0
         self.number_of_chunks: int = None
         
         self.condition = asyncio.Condition()
@@ -50,7 +51,8 @@ class ChunksWriter():
         """
         # 每个chunk 2MB
         chunk_size = CHUNK_SIZE_OF_CHUNKSWITER
-        self.number_of_chunks = ((self.cache_range_end + chunk_size) // chunk_size) + 1
+        self.cache_size = self.cache_range_end + chunk_size
+        self.number_of_chunks = (self.cache_size // chunk_size) + 1
         
         # 修正请求头
         if self.cache_range_start == 0:
@@ -244,7 +246,7 @@ class CacheSystem():
             return
         writer = ChunksWriter(request_info, request_header)
         await self.task_manager.create_task(request_info.file_info.id, writer, request_info.cache_range_status)
-        await writer.write(request_info.raw_link_manager.get_raw_url())
+        await writer.write(await request_info.raw_link_manager.get_raw_url())
         
     async def write_cache_file(self, request_info: RequestInfo):
         

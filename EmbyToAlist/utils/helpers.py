@@ -1,5 +1,6 @@
 import re
 import asyncio
+import json
 
 import fastapi
 from loguru import logger
@@ -103,6 +104,7 @@ class RawLinkManager():
         Returns:
             str: strm文件中的直链
         """
+        # 流式请求可以避免获取响应体
         async with self.client.stream("GET", self.path, headers={
             "user-agent": self.ua
             }) as response:
@@ -113,6 +115,14 @@ class RawLinkManager():
                     return location
                 raise fastapi.HTTPException(status_code=500, detail="No Location header in response")
             elif response.status_code == 200:
+                # 避免响应错误信息
+                if "application/json" in response.headers.get("Content-Type", "").lower():
+                    logger.warning("Strm file returned JSON response")
+                    body = await response.aread()
+                    body = json.loads(body.decode())
+                    logger.debug(f"Response Text: {body}")
+                    raise fastapi.HTTPException(status_code=500, detail="Strm file returned JSON response")
+                
                 # path中存储的是直链
                 return self.path
             else:

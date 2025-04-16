@@ -43,7 +43,8 @@ async def redirect(item_id, filename, request: fastapi.Request):
         return fastapi.responses.RedirectResponse(url=redirected_url, status_code=302)
     
     # transform file path to alist path
-    file_info.path = transform_file_path(file_info.path)
+    if not file_info.is_strm:
+        file_info.path = transform_file_path(file_info.path)
     
     # 如果满足alist直链条件，提前通过异步缓存alist直链
     raw_link_manager = RawLinkManager(file_info.path, is_strm=file_info.is_strm, ua=request.headers.get('user-agent'))
@@ -100,7 +101,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
         request_info.range_info.cache_range = (0, cache_file_size)
         
         # check video player
-        if 'mpv' in request.headers.get('User-Agent'):
+        if 'mpv' in request.headers.get('User-Agent').lower():
             request_info.perfect_media_player = True
             response_end = cache_file_size - 1
         else:
