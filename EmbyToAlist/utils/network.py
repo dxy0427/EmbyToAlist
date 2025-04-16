@@ -59,10 +59,11 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                     logger.debug(f"Expected data read: {end - start + 1}, Actual data read: {data_read}")
                     logger.debug(f"Read from {start} to {end}")
                     
-            # 不是末尾则打断
-            if FORCE_CLIENT_RECONNECT and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
-                logger.info("Cache exhausted, breaking the connection")
-                raise ForcedReconnectError()
+            if not request_info.perfect_media_player:
+                # 不是末尾则打断
+                if FORCE_CLIENT_RECONNECT and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
+                    logger.info("Cache exhausted, breaking the connection")
+                    raise ForcedReconnectError()
                     
         except ForcedReconnectError as e:
             logger.info(f"Expected ForcedReconnectError: {e}")

@@ -81,6 +81,8 @@ class RequestInfo:
     cache_range_status: CacheRangeStatus = CacheRangeStatus.UNKNOWN
     api_key: Optional[str] = None
     raw_link_manager: Optional['RawLinkManager'] = None
+    perfect_media_player: bool = False
+    """ 是否为完美支持 Range 请求的播放器 """
 
 response_headers_template = {
     'Accept-Ranges': 'bytes',

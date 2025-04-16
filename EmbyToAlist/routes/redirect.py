@@ -99,10 +99,18 @@ async def redirect(item_id, filename, request: fastapi.Request):
     if start_byte < cache_file_size:
         request_info.range_info.cache_range = (0, cache_file_size)
         
+        # check video player
+        if 'mpv' in request.headers.get('User-Agent'):
+            request_info.perfect_media_player = True
+            response_end = cache_file_size - 1
+        else:
+            response_end = end_byte
+            
         if end_byte is None or end_byte > cache_file_size:
             request_info.cache_range_status = CacheRangeStatus.PARTIALLY_CACHED
         else:
             request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED
+            
             if cache_exist:
                 resp_header = response_headers_template.copy()
                 resp_header['Content-Type'] = get_content_type(file_info.name)
@@ -129,15 +137,15 @@ async def redirect(item_id, filename, request: fastapi.Request):
                     headers=resp_header,
                     status_code=206,
                 )
+        response_end = file_info.size - 1
         
     else:
         request_info.cache_range_status = CacheRangeStatus.NOT_CACHED
         return await temporary_redirect(
             raw_link_manager=raw_link_manager,
         )
-
+        
     response_start = start_byte
-    response_end = file_info.size - 1 if end_byte is None else end_byte
     request_info.range_info.response_range = (response_start, response_end)
     
     source_request_headers = {
