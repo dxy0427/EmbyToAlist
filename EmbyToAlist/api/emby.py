@@ -3,7 +3,6 @@ from loguru import logger
 
 from ..config import EMBY_SERVER
 from ..models import ItemInfo, FileInfo, TVShowsInfo
-from ..utils.path import transform_file_path
 from ..utils.common import ClientManager
 
 async def get_item_info(item_id, api_key) -> ItemInfo:
@@ -134,7 +133,7 @@ async def get_file_info(item_id, api_key, media_source_id, media_info_api=None) 
         for i in media_info['MediaSources']:
             all_source.append(FileInfo(
                 id=i.get('Id'),
-                path=transform_file_path(i.get('Path')),
+                path=i.get('Path'),
                 bitrate=i.get('Bitrate', 27962026),
                 size=i.get('Size', 0),
                 container=i.get('Container', None),
@@ -150,7 +149,7 @@ async def get_file_info(item_id, api_key, media_source_id, media_info_api=None) 
         if i['Id'] == media_source_id:
             return FileInfo(
                 id = i.get('Id'),
-                path=transform_file_path(i.get('Path')),
+                path=i.get('Path'),
                 bitrate=i.get('Bitrate', 27962026),
                 size=i.get('Size', 0),
                 container=i.get('Container', None),

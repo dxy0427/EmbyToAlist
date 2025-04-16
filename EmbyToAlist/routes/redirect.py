@@ -3,7 +3,7 @@ from loguru import logger
 
 from ..config import CACHE_ENABLE, INITIAL_CACHE_SIZE_OF_TAIL
 from ..models import FileInfo, ItemInfo, RequestInfo, CacheRangeStatus, RangeInfo, response_headers_template
-from ..utils.path import should_redirect_to_alist
+from ..utils.path import should_redirect_to_alist, transform_file_path
 from ..utils.helpers import extract_api_key, get_content_type, RawLinkManager
 from ..utils.network import reverse_proxy, temporary_redirect
 from ..api.emby import get_item_info, get_file_info
@@ -41,6 +41,9 @@ async def redirect(item_id, filename, request: fastapi.Request):
         redirected_url = f"{host_url}preventRedirect{request.url.path}{'?' + request.url.query if request.url.query else ''}"
         logger.info("Redirected Url: " + redirected_url)
         return fastapi.responses.RedirectResponse(url=redirected_url, status_code=302)
+    
+    # transform file path to alist path
+    file_info.path = transform_file_path(file_info.path)
     
     # 如果满足alist直链条件，提前通过异步缓存alist直链
     raw_link_manager = RawLinkManager(file_info.path, is_strm=file_info.is_strm, ua=request.headers.get('user-agent'))
