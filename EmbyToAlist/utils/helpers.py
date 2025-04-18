@@ -8,16 +8,6 @@ from aiocache import Cache
 
 from ..api.alist import get_alist_raw_url
 from ..utils.common import ClientManager
-# a wrapper function to get the time of the function
-def get_time(func):
-    def wrapper(*args, **kwargs):
-        import time
-        start = time.time()
-        result = func(*args, **kwargs)
-        end = time.time()
-        logger.info(f"Function {func.__name__} takes: {end - start} seconds")
-        return result
-    return wrapper
 
 def get_content_type(container) -> str:
     """文件格式对应的Content-Type映射"""

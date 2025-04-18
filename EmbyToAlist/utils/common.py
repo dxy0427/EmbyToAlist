@@ -3,6 +3,17 @@ from loguru import logger
 
 from typing import Optional
 
+# a wrapper function to get the time of the function
+def get_time(func):
+    def wrapper(*args, **kwargs):
+        import time
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        logger.info(f"Function {func.__name__} takes: {end - start} seconds")
+        return result
+    return wrapper
+
 class ClientManager():
     _client: Optional[httpx.AsyncClient] = None
     

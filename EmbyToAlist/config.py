@@ -34,5 +34,8 @@ MEMORY_CACHE_ONLY = env.bool("MEMORY_CACHE_ONLY", default=False)
 
 HIGH_COMPAT_MEDIA_CLIENTS = env.list("HIGH_COMPAT_MEDIA_CLIENTS", subcast=str, default=["mpv"])
 """对Range请求支持较好的播放器列表，默认mpv"""
+HIGH_COMPAT_MEDIA_CLIENTS = [client.strip().lower() for client in HIGH_COMPAT_MEDIA_CLIENTS]
+
 LOW_COMPAT_MEDIA_CLIENTS = env.list("LOW_COMPAT_MEDIA_CLIENTS", subcast=str, default=["vlc"])
 """对Range请求支持较差的播放器列表，默认vlc，当前播放器列表会尝试使用其他缓存策略"""
+LOW_COMPAT_MEDIA_CLIENTS = [client.strip().lower() for client in LOW_COMPAT_MEDIA_CLIENTS]
