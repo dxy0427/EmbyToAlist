@@ -8,7 +8,7 @@ import aiofiles.os
 from fastapi import HTTPException
 from loguru import logger
 
-from ..config import CHUNK_SIZE_OF_CHUNKSWITER, MEMORY_CACHE_ONLY
+from ..config import CHUNK_SIZE_OF_CHUNKSWITER, MEMORY_CACHE_ONLY, INITIAL_CACHE_SIZE_OF_TAIL
 from ..models import FileInfo, RequestInfo, CacheRangeStatus
 from .manager import TaskManager
 from ..utils.common import ClientManager
@@ -44,6 +44,9 @@ class ChunksWriter():
         # 则我们需要缓存 60000-80000
         self.smallest_request_start_point: int = float("inf")
 
+    def __del__(self):
+        logger.debug(f"ChunksWriter: {self.cache_range_start}-{self.cache_range_end} has been deleted")
+        
     async def _write(self, raw_url: str):
         """异步写入缓存文件
         
@@ -230,7 +233,7 @@ class CacheSystem():
         # 定义缓存参数
         request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
         request_info.range_info.cache_range = (
-            request_info.file_info.size - 1 - CHUNK_SIZE_OF_CHUNKSWITER, 
+            request_info.file_info.size - 1 - INITIAL_CACHE_SIZE_OF_TAIL, 
             request_info.file_info.size - 1
             )
         
