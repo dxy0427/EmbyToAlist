@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -85,6 +86,21 @@ class RequestInfo:
     """ 是否为对 Range 请求支持较好的播放器 """
     is_LOW_COMPAT_MEDIA_CLIENTS: bool = False
     """ 是否为对 Range 请求支持较差的播放器 """
+
+    def __deepcopy__(self, memo):
+        copied = RequestInfo(
+            file_info=self.file_info,
+            item_info=self.item_info,
+            range_info=copy.deepcopy(self.range_info, memo),
+            cache_range_status=self.cache_range_status,
+            api_key=self.api_key,
+            raw_link_manager=self.raw_link_manager,  # 👈 关键跳过点
+            is_HIGH_COMPAT_MEDIA_CLIENTS=self.is_HIGH_COMPAT_MEDIA_CLIENTS,
+            is_LOW_COMPAT_MEDIA_CLIENTS=self.is_LOW_COMPAT_MEDIA_CLIENTS
+        )
+        memo[id(self)] = copied
+        return copied
+
 
 response_headers_template = {
     'Accept-Ranges': 'bytes',

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import copy
 from pathlib import Path
 from weakref import WeakValueDictionary
 
@@ -17,7 +18,10 @@ if TYPE_CHECKING:
     import httpx
     
 class ChunksWriter():
-    def __init__(self, request_info: RequestInfo, request_header: dict):
+    def __init__(self, 
+                 request_info: RequestInfo, 
+                 request_header: dict
+                 ):
         self.client: httpx.AsyncClient = ClientManager.get_client()
         
         self.queue = asyncio.Queue()
@@ -231,25 +235,25 @@ class CacheSystem():
         :param request_header: 请求头
         """
         # 定义缓存参数
-        request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
-        request_info.range_info.cache_range = (
+        tail_request_info = copy.deepcopy(request_info)
+        tail_request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
+        tail_request_info.range_info.cache_range = (
             request_info.file_info.size - 1 - INITIAL_CACHE_SIZE_OF_TAIL, 
             request_info.file_info.size - 1
             )
         
-        request_info.range_info.response_range = (
-            request_info.range_info.request_range[0],
-            request_info.file_info.size - 1
-            )
+        tail_request_info.range_info.request_range = None
+        tail_request_info.range_info.response_range = None
         
         # 防止异步中的竞争条件
-        task = await self.task_manager.get_task(request_info.file_info.id, request_info.cache_range_status)
+        task = await self.task_manager.get_task(tail_request_info.file_info.id, tail_request_info.cache_range_status)
         if task is not None:
             logger.debug("Warm up tail cache task already exists, skipping")
             return
-        writer = ChunksWriter(request_info, request_header)
-        await self.task_manager.create_task(request_info.file_info.id, writer, request_info.cache_range_status)
-        await writer.write(await request_info.raw_link_manager.get_raw_url())
+        writer = ChunksWriter(tail_request_info, request_header)
+        await self.task_manager.create_task(tail_request_info.file_info.id, writer, tail_request_info.cache_range_status)
+        await writer.write(await tail_request_info.raw_link_manager.get_raw_url())
+        asyncio.create_task(self.write_cache_file(tail_request_info))
         
     async def write_cache_file(self, request_info: RequestInfo):
         
@@ -278,6 +282,7 @@ class CacheSystem():
         if MEMORY_CACHE_ONLY:
             await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)
             logger.debug("Experimental feature: MEMORY_CACHE_ONLY is enabled, skipping cache file writing")
+            logger.debug(self.task_manager.tasks)
             return
         
         subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
