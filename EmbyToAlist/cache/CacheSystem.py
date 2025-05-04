@@ -277,7 +277,7 @@ class CacheSystem():
             return "pass_check"
     
         # 后台缓存文件，sleep防止占用异步线程
-        await asyncio.sleep(20)
+        await asyncio.sleep(40)
         
         if MEMORY_CACHE_ONLY:
             await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)

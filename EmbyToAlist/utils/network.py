@@ -7,6 +7,7 @@ from loguru import logger
 from ..config import FORCE_CLIENT_RECONNECT
 from ..models import RequestInfo, CacheRangeStatus
 from ..cache.manager import CacheManager
+from ..utils.common import ClientManager
 from ..cache.CacheSystem import CacheSystem, ChunksWriter
 from typing import AsyncGenerator, TYPE_CHECKING
 if TYPE_CHECKING:
@@ -52,23 +53,37 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                     start, end = request_info.range_info.response_range
                    
                     data_read = 0
-                    if not request_info.is_HIGH_COMPAT_MEDIA_CLIENTS and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
-                        async for chunk in writer.read(start, None):
-                            data_read += len(chunk)
-                            yield chunk
-                    else:
-                        async for chunk in writer.read(start, end):
-                            data_read += len(chunk)
-                            yield chunk
+                    if request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
+                        if not request_info.is_HIGH_COMPAT_MEDIA_CLIENTS and not request_info.is_LOW_COMPAT_MEDIA_CLIENTS:
+                            async for chunk in writer.read(start, None):
+                                data_read += len(chunk)
+                                yield chunk
+                    
+                    async for chunk in writer.read(start, end):
+                        data_read += len(chunk)
+                        yield chunk
                     
                     logger.debug(f"Expected data read: {end - start + 1}, Actual data read: {data_read}")
                     logger.debug(f"Read from {start} to {end}")
                     
-            if not request_info.is_HIGH_COMPAT_MEDIA_CLIENTS:
+            if not request_info.is_HIGH_COMPAT_MEDIA_CLIENTS and not request_info.is_LOW_COMPAT_MEDIA_CLIENTS:
                 # 不是末尾则打断
                 if FORCE_CLIENT_RECONNECT and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
                     logger.info("Cache exhausted, breaking the connection")
                     raise ForcedReconnectError()
+                
+            if request_info.is_LOW_COMPAT_MEDIA_CLIENTS and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
+                # 低兼容播放器，反向代理后端
+                logger.info("Streaming from backend...")
+                client = ClientManager.get_client()
+                request_header['range'] = f"bytes={request_info.range_info.cache_range[1]+1}-"
+                async with client.stream(method="GET", url=raw_url, headers=request_header) as response:
+                    if response.status_code != 206:
+                        logger.error(f"Reverse_proxy failed, {response.status_code}")
+                        raise fastapi.HTTPException(status_code=500, detail="Reverse Proxy Failed")
+                    
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
                     
         except ForcedReconnectError as e:
             logger.info(f"Expected ForcedReconnectError: {e}")

@@ -4,8 +4,9 @@ from loguru import logger
 from ..config import EMBY_SERVER
 from ..models import ItemInfo, FileInfo, TVShowsInfo
 from ..utils.common import ClientManager
+from typing import Union
 
-async def get_item_info(item_id, api_key) -> ItemInfo:
+async def get_item_info(item_id, api_key, original=False) -> ItemInfo | None | dict:
     """获取Emby Item信息
 
     :param item_id: Emby Item ID
@@ -17,26 +18,30 @@ async def get_item_info(item_id, api_key) -> ItemInfo:
     item_info_api = f"{EMBY_SERVER}/emby/Items?api_key={api_key}&Ids={item_id}"
     logger.debug(f"Requesting Item Info: {item_info_api}")
     try:
-        req = await client.get(item_info_api)
-        req.raise_for_status()
-        req = req.json()
+        resp = await client.get(item_info_api)
+        resp.raise_for_status()
+        resp = resp.json()
     except Exception as e:
         logger.error(f"Error: get_item_info failed, {e}")
         raise HTTPException(status_code=500, detail="Failed to request Emby server, {e}")
     
-    if not req['Items']: 
+    if original:
+        # 直接返回原始数据
+        return resp
+    
+    if not resp['Items']: 
         logger.debug(f"Item not found: {item_id};")
         return None
     
-    item_type = req['Items'][0]['Type'].lower()
+    item_type = resp['Items'][0]['Type'].lower()
     if item_type != 'movie': item_type = 'episode'
     
     if item_type == 'episode':
     
         tvshows_info = TVShowsInfo(
-            series_id=int(req['Items'][0]['SeriesId']),
-            season_id=int(req['Items'][0]['SeasonId']),
-            index_number=int(req['Items'][0]['IndexNumber'])
+            series_id=int(resp['Items'][0]['SeriesId']),
+            season_id=int(resp['Items'][0]['SeasonId']),
+            index_number=int(resp['Items'][0]['IndexNumber'])
         )
     else:
         tvshows_info = None
@@ -105,20 +110,19 @@ async def get_next_episode_item_info(series_id: int, season_id: int, item_id: in
         
 
 # used to get the file info from emby server
-async def get_file_info(item_id, api_key, media_source_id, media_info_api=None) -> FileInfo | list[FileInfo]:
+async def get_file_info(item_id, api_key, media_source_id, original=False) -> FileInfo | list[FileInfo] | dict:
     """
     从Emby服务器获取文件播放信息
     
     :param item_id: Emby Item ID
     :param MediaSourceId: Emby MediaSource ID
     :param apiKey: Emby API Key
-    :param media_info_api: 自定义PlaybackInfo URL，及参数
+    :param original: 是否返回原始数据
     :return: 包含文件信息的dataclass
     """
     client = ClientManager.get_client()
     
-    if media_info_api is None:
-        media_info_api = f"{EMBY_SERVER}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
+    media_info_api = f"{EMBY_SERVER}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
     logger.info(f"Requested Info URL: {media_info_api}")
     try:
         media_info = await client.get(media_info_api)
@@ -128,6 +132,10 @@ async def get_file_info(item_id, api_key, media_source_id, media_info_api=None) 
         logger.error(f"Error: failed to request Emby server, {e}")
         raise HTTPException(status_code=500, detail=f"Failed to request Emby server, {e}")
 
+    if original:
+        # 直接返回原始数据
+        return media_info
+    
     if media_source_id is None:
         all_source = []
         for i in media_info['MediaSources']:
