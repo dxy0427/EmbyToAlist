@@ -17,4 +17,4 @@ ENV PYTHONUNBUFFERED=1
 RUN adduser -u 1145 --disabled-password --gecos "" appuser && chown -R appuser /app
 USER appuser
 
-CMD ["python", "main.py"]
+CMD ["python", "-m", "EmbyToAlist"]

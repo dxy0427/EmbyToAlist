@@ -74,6 +74,7 @@ class ChunksWriter():
         async with self.client.stream("GET", raw_url, headers=self.request_header) as response:
             if response.status_code != 206:
                 raise ValueError(f"Expected 206 response, got {response.status_code}")
+            logger.debug("======== Cache write started =======")
             
             async for chunk in response.aiter_bytes(chunk_size):
                 # 写入缓存文件
@@ -82,6 +83,7 @@ class ChunksWriter():
                     self.condition.notify_all() 
             
             async with self.condition:
+                logger.debug("======== Cache write completed =======")
                 self.completed = True
                 self.condition.notify_all()
                 

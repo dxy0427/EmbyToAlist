@@ -71,6 +71,7 @@ class RawLinkManager():
         
         # 如果已经获取到直链:
         if self.raw_url is not None:
+            logger.debug(f"Cache hit for {self.path}")
             return
 
         self.task = asyncio.create_task(self.cache_raw_url())

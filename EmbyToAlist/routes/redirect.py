@@ -3,7 +3,7 @@ from loguru import logger
 
 from ..config import CACHE_ENABLE, INITIAL_CACHE_SIZE_OF_TAIL, HIGH_COMPAT_MEDIA_CLIENTS, LOW_COMPAT_MEDIA_CLIENTS
 from ..models import FileInfo, ItemInfo, RequestInfo, CacheRangeStatus, RangeInfo, response_headers_template
-from ..utils.path import should_redirect_to_alist, transform_file_path
+from ..utils.path import transform_file_path
 from ..utils.helpers import extract_api_key, get_content_type, RawLinkManager
 from ..utils.network import reverse_proxy, temporary_redirect
 from ..api.emby import get_item_info, get_file_info
@@ -30,7 +30,6 @@ async def redirect(item_id, filename, request: fastapi.Request):
     
     file_info: FileInfo = await get_file_info(item_id, api_key, media_source_id)
     item_info: ItemInfo = await get_item_info(item_id, api_key)
-    host_url = str(request.base_url)
     
     logger.info(f"Requested Item ID: {item_id}")
     logger.info("MediaFile Mount Path: " + file_info.path)

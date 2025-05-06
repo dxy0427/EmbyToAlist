@@ -9,4 +9,5 @@
 **/.vscode
 **/.venv
 *.log
+**/cache
 README.md
