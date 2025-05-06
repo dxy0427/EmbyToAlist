@@ -4,7 +4,7 @@ import fastapi
 import uvicorn
 
 from .config import LOG_LEVEL, CACHE_ENABLE, CACHE_PATH
-from .routes import redirect
+from .routes import redirect, playback
 from .utils.common import ClientManager
 from .cache.manager import CacheManager
 
@@ -20,6 +20,7 @@ async def lifespan(app: fastapi.FastAPI):
 app = fastapi.FastAPI(lifespan=lifespan)
 
 app.include_router(redirect.router)
+app.include_router(playback.router)
 
 if __name__ == "__main__":
     uvicorn.run(app, port=60001, host='0.0.0.0', log_level=LOG_LEVEL)

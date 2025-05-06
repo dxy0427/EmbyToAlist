@@ -4,15 +4,61 @@ from loguru import logger
 from ..config import EMBY_SERVER
 from ..models import ItemInfo, FileInfo, TVShowsInfo
 from ..utils.common import ClientManager
-from typing import Union
+from typing import Union, Optional
 
-async def get_item_info(item_id, api_key, original=False) -> ItemInfo | None | dict:
+def parse_playback_info(data, media_source_id: Optional[str] = None) -> FileInfo | list[FileInfo]:
+    """解析 PlaybackInfo 返回的播放信息
+    
+    Args:
+        data (dict): Emby PlaybackInfo 返回的json数据
+        media_source_id (str): Emby MediaSource ID
+    Returns:
+        FileInfo: 包含文件信息的dataclass
+        list[FileInfo]: 没有指定MediaSourceId时，返回所有文件信息的列表
+    """
+    if media_source_id is None:
+        all_source = []
+        for i in data['MediaSources']:
+            all_source.append(FileInfo(
+                id=i.get('Id'),
+                path=i.get('Path'),
+                bitrate=i.get('Bitrate', 27962026),
+                size=i.get('Size', 0),
+                container=i.get('Container', None),
+                # 获取15秒的缓存文件大小， 并取整
+                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15),
+                name=i.get('Name'),
+                # 是否为远程流
+                is_strm=i.get('IsRemote', False)
+            ))
+        return all_source
+
+    for i in data['MediaSources']:
+        if i['Id'] == media_source_id:
+            return FileInfo(
+                id = i.get('Id'),
+                path=i.get('Path'),
+                bitrate=i.get('Bitrate', 27962026),
+                size=i.get('Size', 0),
+                container=i.get('Container', None),
+                # 获取15秒的缓存文件大小， 并取整
+                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15),
+                name=i.get('Name'),
+                # 是否为远程流
+                is_strm=i.get('IsRemote', False)
+            )
+    # can't find the matched MediaSourceId in MediaSources
+    raise HTTPException(status_code=500, detail="Can't match MediaSourceId")
+
+async def get_item_info(item_id: str, api_key: str) -> ItemInfo | None:
     """获取Emby Item信息
 
-    :param item_id: Emby Item ID
-    :param api_key: Emby API Key
-    
-    :return: 包含Item信息的dataclass
+    Args:
+        item_id (str): Emby Item ID
+        api_key (str): Emby API Key
+    Returns:
+        ItemInfo: 包含Item信息的dataclass
+        None: 如果没有找到Item
     """
     client = ClientManager.get_client()
     item_info_api = f"{EMBY_SERVER}/emby/Items?api_key={api_key}&Ids={item_id}"
@@ -24,10 +70,6 @@ async def get_item_info(item_id, api_key, original=False) -> ItemInfo | None | d
     except Exception as e:
         logger.error(f"Error: get_item_info failed, {e}")
         raise HTTPException(status_code=500, detail="Failed to request Emby server, {e}")
-    
-    if original:
-        # 直接返回原始数据
-        return resp
     
     if not resp['Items']: 
         logger.debug(f"Item not found: {item_id};")
@@ -110,20 +152,23 @@ async def get_next_episode_item_info(series_id: int, season_id: int, item_id: in
         
 
 # used to get the file info from emby server
-async def get_file_info(item_id, api_key, media_source_id, original=False) -> FileInfo | list[FileInfo] | dict:
+async def get_file_info(item_id: str, api_key: str, media_source_id: Optional[str] = None) -> FileInfo | list[FileInfo]:
     """
-    从Emby服务器获取文件播放信息
+    从Emby 的 PlaybackInfo 获取文件播放信息
     
-    :param item_id: Emby Item ID
-    :param MediaSourceId: Emby MediaSource ID
-    :param apiKey: Emby API Key
-    :param original: 是否返回原始数据
-    :return: 包含文件信息的dataclass
+    Args:
+        item_id (str): Emby Item ID
+        api_key (str): Emby API Key
+        media_source_id (str): Emby MediaSource ID
+    Returns:
+        FileInfo: 包含文件信息的dataclass
+        list[FileInfo]: 没有指定MediaSourceId时，返回所有文件信息的列表
     """
     client = ClientManager.get_client()
     
     media_info_api = f"{EMBY_SERVER}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
     logger.info(f"Requested Info URL: {media_info_api}")
+    
     try:
         media_info = await client.get(media_info_api)
         media_info.raise_for_status()
@@ -131,41 +176,5 @@ async def get_file_info(item_id, api_key, media_source_id, original=False) -> Fi
     except Exception as e:
         logger.error(f"Error: failed to request Emby server, {e}")
         raise HTTPException(status_code=500, detail=f"Failed to request Emby server, {e}")
-
-    if original:
-        # 直接返回原始数据
-        return media_info
     
-    if media_source_id is None:
-        all_source = []
-        for i in media_info['MediaSources']:
-            all_source.append(FileInfo(
-                id=i.get('Id'),
-                path=i.get('Path'),
-                bitrate=i.get('Bitrate', 27962026),
-                size=i.get('Size', 0),
-                container=i.get('Container', None),
-                # 获取15秒的缓存文件大小， 并取整
-                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15),
-                name=i.get('Name'),
-                # 是否为远程流
-                is_strm=i.get('IsRemote', False)
-            ))
-        return all_source
-
-    for i in media_info['MediaSources']:
-        if i['Id'] == media_source_id:
-            return FileInfo(
-                id = i.get('Id'),
-                path=i.get('Path'),
-                bitrate=i.get('Bitrate', 27962026),
-                size=i.get('Size', 0),
-                container=i.get('Container', None),
-                # 获取15秒的缓存文件大小， 并取整
-                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15),
-                name=i.get('Name'),
-                # 是否为远程流
-                is_strm=i.get('IsRemote', False)
-            )
-    # can't find the matched MediaSourceId in MediaSources
-    raise HTTPException(status_code=500, detail="Can't match MediaSourceId")
+    return parse_playback_info(media_info, media_source_id)

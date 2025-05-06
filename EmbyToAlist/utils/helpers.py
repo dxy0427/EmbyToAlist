@@ -43,7 +43,8 @@ def extract_api_key(request: fastapi.Request):
     return api_key
             
 class RawLinkManager():
-    """管理alist直链获取任务
+    """管理alist直链获取任务和缓存
+    
     支持普通文件和strm文件
     """
     cache = Cache(Cache.MEMORY)
@@ -59,24 +60,25 @@ class RawLinkManager():
         self.client = ClientManager.get_client()
         self.raw_url = None
         self.task = None
+        self.key = f"raw_url:{self.path}:{self.ua}"
         
     async def create_task(self) -> None:
         # 如果任务已存在:
         if self.task and not self.task.done():
             return
         
-        self.raw_url = await self.cache.get(f"raw_url:{self.path}:{self.ua}", None)
+        self.raw_url = await self.cache.get(self.key, None)
         
         # 如果已经获取到直链:
         if self.raw_url is not None:
             return
 
-        self.task = asyncio.create_task(self.request_raw_url())
+        self.task = asyncio.create_task(self.cache_raw_url())
             
         self.task.add_done_callback(self.on_task_done)
         return
     
-    async def request_raw_url(self) -> str:
+    async def cache_raw_url(self) -> str:
         if self.is_strm:
             raw_url = await self.precheck_strm()
         else:
@@ -84,9 +86,8 @@ class RawLinkManager():
                 self.path,
                 self.ua
                 )
-        await self.cache.set(f"raw_url:{self.path}:{self.ua}", raw_url, ttl=600)
+        await self.cache.set(self.key, raw_url, ttl=600)
         return raw_url
-        
     
     async def precheck_strm(self) -> str:
         """预先请求strm文件地址，以便在请求时直接返回直链
@@ -124,8 +125,8 @@ class RawLinkManager():
         if self.raw_url is not None:
             return self.raw_url
           
-        if await self.cache.exists(f"raw_url:{self.path}:{self.ua}"):
-            self.raw_url = await self.cache.get(f"raw_url:{self.path}:{self.ua}")
+        if await self.cache.exists(self.key):
+            self.raw_url = await self.cache.get(self.key)
             logger.debug(f"Cache hit for {self.path}")
             return self.raw_url
           
