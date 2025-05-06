@@ -17,6 +17,7 @@ router = fastapi.APIRouter()
 @router.get('/videos/{item_id}/{filename}')
 @router.get('/emby/Videos/{item_id}/{filename}')
 @router.get('/emby/videos/{item_id}/{filename}')
+@router.head('/Videos/{item_id}/{filename}')
 async def redirect(item_id, filename, request: fastapi.Request):
     # Example: https://emby.example.com/emby/Videos/xxxxx/original.mp4?MediaSourceId=xxxxx&api_key=xxxxx
     
@@ -163,6 +164,14 @@ async def redirect(item_id, filename, request: fastapi.Request):
     response_headers['Content-Type'] = get_content_type(file_info.container)
     response_headers['Content-Range'] = f"bytes {response_start}-{response_end}/{file_info.size}"
     response_headers['Content-Length'] = f'{response_end - response_start + 1}'
+    response_headers['Content-Disposition'] = f'inline; filename="{file_info.name}.{file_info.container}"'
+    
+    # consider head request
+    if request.method == 'HEAD':
+        return fastapi.responses.Response(
+            headers=response_headers,
+            status_code=206,
+        )
     
     if cache_exist:
         return await reverse_proxy(
