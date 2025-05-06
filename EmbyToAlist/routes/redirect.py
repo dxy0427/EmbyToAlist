@@ -38,13 +38,6 @@ async def redirect(item_id, filename, request: fastapi.Request):
     
     # transform file path to alist path
     if not file_info.is_strm:
-        # if checkFilePath return False：return Emby originalUrl
-        if not should_redirect_to_alist(file_info.path):
-            # 拼接完整的URL，如果query为空则不加问号
-            redirected_url = f"{host_url}preventRedirect{request.url.path}{'?' + request.url.query if request.url.query else ''}"
-            logger.info("Redirected Url: " + redirected_url)
-            return fastapi.responses.RedirectResponse(url=redirected_url, status_code=302)
-        
         file_info.path = transform_file_path(file_info.path)
     
     # 如果满足alist直链条件，提前通过异步缓存alist直链

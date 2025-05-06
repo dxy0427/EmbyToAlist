@@ -5,7 +5,7 @@ from ..utils.helpers import extract_api_key, RawLinkManager, ClientManager
 from ..api.emby import get_file_info, parse_playback_info
 from ..utils.path import transform_file_path, should_redirect_to_alist
 from ..models import FileInfo
-from ..config import EMBY_SERVER
+from ..config import EMBY_SERVER, CACHE_ENABLE
 
 router = fastapi.APIRouter()
 
@@ -40,18 +40,33 @@ async def playback_info(item_id: str, request: fastapi.Request):
         )
     
     files_info: list[FileInfo] = parse_playback_info(data)
-    for each in files_info:
-        if should_redirect_to_alist(each.path):
-            path = transform_file_path(each.path)
+    for index, each in enumerate(files_info):
+        
+        # 如果需要alist处理，如云盘路径，或strm流，提前通过异步缓存alist直链
+        if should_redirect_to_alist(each.path) or each.is_strm:
+            path = transform_file_path(each.path) if not each.is_strm else each.path
             
             raw_link_manager = RawLinkManager(path, each.is_strm, request.headers.get("User-Agent"))
             await raw_link_manager.create_task()
+            
+            redirected_url = None
+        else:
+            original_stream_url = data['MediaSources'][index]['DirectStreamUrl'] 
+            redirected_url = f"{request.base_url}preventRedirect/emby{original_stream_url}"
+
+        if redirected_url:
+            data['MediaSources'][index]['DirectStreamUrl'] = redirected_url
+            logger.debug(f"Play Url modified to: {redirected_url}")
+    
+    logger.debug(data)
+    headers = dict(response.headers)
+    headers.pop('content-length', None)
     
     # Prepare the response to forward back to the client
-    return fastapi.Response(
-        content=response.content,
+    return fastapi.responses.JSONResponse(
+        content=data,
         status_code=response.status_code,
-        headers=dict(response.headers),
+        headers=headers,
     )        
         
     
