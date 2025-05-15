@@ -92,6 +92,8 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
             logger.error(f"Reverse_proxy failed, {e}")
             raise fastapi.HTTPException(status_code=500, detail="Reverse Proxy Failed")
         
+    
+    logger.debug(f"Response Headers: {response_headers}")
     return fastapi.responses.StreamingResponse(
         merged_stream(), 
         headers=response_headers, 

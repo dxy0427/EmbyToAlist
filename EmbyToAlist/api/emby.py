@@ -26,7 +26,7 @@ def parse_playback_info(data, media_source_id: Optional[str] = None) -> FileInfo
                 size=i.get('Size', 0),
                 container=i.get('Container', None),
                 # 获取15秒的缓存文件大小， 并取整
-                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15),
+                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 20),
                 name=i.get('Name'),
                 # 是否为远程流
                 is_strm=i.get('IsRemote', False)
@@ -42,7 +42,7 @@ def parse_playback_info(data, media_source_id: Optional[str] = None) -> FileInfo
                 size=i.get('Size', 0),
                 container=i.get('Container', None),
                 # 获取15秒的缓存文件大小， 并取整
-                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15),
+                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 20),
                 name=i.get('Name'),
                 # 是否为远程流
                 is_strm=i.get('IsRemote', False)
