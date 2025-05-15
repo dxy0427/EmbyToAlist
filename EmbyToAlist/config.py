@@ -8,6 +8,9 @@ EMBY_SERVER = env.str("EMBY_SERVER")
 ALIST_SERVER = env.str("ALIST_SERVER")
 ALIST_API_KEY = env.str("ALIST_API_KEY")
 
+ENABLE_UA_PASSTHROUGH = env.bool("ENABLE_UA_PASSTHROUGH", default=False)
+"""是否启用UA透传，默认False，启用后会将请求的User-Agent透传给alist，会导致预缓存失效"""
+
 IGNORE_PATH = env.list("IGNORE_PATH", subcast=str, default=[])
 IGNORE_PATH = [path.strip() for path in IGNORE_PATH]
 

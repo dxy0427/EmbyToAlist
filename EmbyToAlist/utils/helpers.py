@@ -1,12 +1,14 @@
 import re
 import asyncio
 import json
+import hashlib
 
 import fastapi
 from loguru import logger
 from aiocache import Cache
 
 from ..api.alist import get_alist_raw_url
+from ..config import ENABLE_UA_PASSTHROUGH
 from ..utils.common import ClientManager
 
 def get_content_type(container) -> str:
@@ -52,15 +54,27 @@ class RawLinkManager():
     def __init__(self, 
                  path: str,
                  is_strm: bool,
-                 ua: str
+                 ua: str = None,
+                 enable_ua_passthrough: bool = ENABLE_UA_PASSTHROUGH
                  ):
+        if enable_ua_passthrough and ua is None:
+            raise fastapi.HTTPException(status_code=500, detail="User-Agent passthrough is enabled, but User-Agent is None")
+        
+        if not enable_ua_passthrough:
+            # use default media player user-agent
+            self.ua = "mpv/0.33.1"
+        else:
+            self.ua = ua
+            
         self.path = path
         self.is_strm = is_strm
-        self.ua = ua
         self.client = ClientManager.get_client()
         self.raw_url = None
         self.task = None
-        self.key = f"raw_url:{self.path}:{self.ua}"
+        
+        ua_hash = hashlib.md5(self.ua.encode()).hexdigest()
+        # 使用md5哈希值作为缓存key的一部分，避免过长的key
+        self.key = f"raw_url:{self.path}:{ua_hash}"
         
     async def create_task(self) -> None:
         # 如果任务已存在:

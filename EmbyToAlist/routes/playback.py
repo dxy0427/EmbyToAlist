@@ -5,7 +5,7 @@ from ..utils.helpers import RawLinkManager, ClientManager
 from ..api.emby import parse_playback_info
 from ..utils.path import transform_file_path, should_redirect_to_alist
 from ..models import FileInfo
-from ..config import EMBY_SERVER
+from ..config import EMBY_SERVER, ENABLE_UA_PASSTHROUGH
 
 router = fastapi.APIRouter()
 
@@ -44,19 +44,21 @@ async def playback_info(item_id: str, request: fastapi.Request):
         
         # 如果需要alist处理，如云盘路径，或strm流，提前通过异步缓存alist直链
         if should_redirect_to_alist(each.path) or each.is_strm:
-            # path = transform_file_path(each.path) if not each.is_strm else each.path
             
-            # raw_link_manager = RawLinkManager(path, each.is_strm, request.headers.get("User-Agent"))
-            # await raw_link_manager.create_task()
+            if not ENABLE_UA_PASSTHROUGH: 
+                path = transform_file_path(each.path) if not each.is_strm else each.path
+                
+                raw_link_manager = RawLinkManager(path, each.is_strm, request.headers.get("User-Agent"))
+                await raw_link_manager.create_task()
             
             redirected_url = None
         else:
             original_stream_url = data['MediaSources'][index]['DirectStreamUrl'] 
             redirected_url = f"{request.base_url}preventRedirect/emby{original_stream_url}"
 
-        if redirected_url:
-            data['MediaSources'][index]['DirectStreamUrl'] = redirected_url
-            logger.debug(f"Play Url modified to: {redirected_url}")
+        # if redirected_url:
+        #     data['MediaSources'][index]['DirectStreamUrl'] = redirected_url
+        #     logger.debug(f"Play Url modified to: {redirected_url}")
     
     # logger.debug(data)
     headers = dict(response.headers)
