@@ -24,12 +24,13 @@ async def redirect(item_id, filename, request: fastapi.Request):
     api_key = extract_api_key(request)
     # jellyfin use mediaSourceId, emby use MediaSourceId
     media_source_id = request.query_params.get('MediaSourceId') if 'MediaSourceId' in request.query_params else request.query_params.get('mediaSourceId')
+    user_id = request.query_params.get('userId')
 
     if not media_source_id:
         raise fastapi.HTTPException(status_code=400, detail="MediaSourceId is required")
     
     file_info: FileInfo = await get_file_info(item_id, api_key, media_source_id)
-    item_info: ItemInfo = await get_item_info(item_id, api_key)
+    item_info: ItemInfo = await get_item_info(item_id, api_key, user_id)
     
     logger.info(f"Requested Item ID: {item_id}")
     logger.info("MediaFile Mount Path: " + file_info.path)

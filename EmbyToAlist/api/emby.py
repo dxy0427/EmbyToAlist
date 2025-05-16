@@ -50,19 +50,25 @@ def parse_playback_info(data, media_source_id: Optional[str] = None) -> FileInfo
     # can't find the matched MediaSourceId in MediaSources
     raise HTTPException(status_code=500, detail="Can't match MediaSourceId")
 
-async def get_item_info(item_id: str, api_key: str) -> ItemInfo | None:
+async def get_item_info(item_id: str, api_key: str, user_id: Optional[str] = None) -> Optional[ItemInfo]:
     """获取Emby Item信息
 
     Args:
         item_id (str): Emby Item ID
         api_key (str): Emby API Key
+        user_id (str): Emby User ID
     Returns:
         ItemInfo: 包含Item信息的dataclass
         None: 如果没有找到Item
     """
     client = ClientManager.get_client()
-    item_info_api = f"{EMBY_SERVER}/emby/Items?api_key={api_key}&Ids={item_id}"
+    
+    if user_id is None:
+        user_id = ''
+    
+    item_info_api = f"{EMBY_SERVER}/emby/Items?api_key={api_key}&Ids={item_id}&UserId={user_id}"
     logger.debug(f"Requesting Item Info: {item_info_api}")
+    
     try:
         resp = await client.get(item_info_api)
         resp.raise_for_status()
@@ -91,6 +97,8 @@ async def get_item_info(item_id: str, api_key: str) -> ItemInfo | None:
     return ItemInfo(
         item_id=int(item_id),
         item_type=item_type,
+        # 播放过的进度，未传入user_id时，默认未播放过
+        in_progress=resp['Items'][0].get('UserData', {}).get('PlaybackPositionTicks', 0) > 0,
         tvshows_info=tvshows_info
     )
 

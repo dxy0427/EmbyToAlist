@@ -27,11 +27,13 @@ class CacheRangeStatus(StrEnum):
 
 @dataclass
 class ItemInfo:
-    """ 视频信息，如果type是movie，则season_id为None """
+    """ 视频信息，如果type是movie，则tvshows_info为None """
     
     item_id: int
     item_type: str
     """episode or movie"""
+    in_progress: bool = False
+    """ 是否之前播放过 """
     tvshows_info: Optional['TVShowsInfo'] = None
     """ 剧集信息, 如果type是movie，则为None """
     
