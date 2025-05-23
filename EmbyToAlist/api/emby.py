@@ -1,54 +1,8 @@
-from fastapi import HTTPException
 from loguru import logger
 
-from ..config import EMBY_SERVER
-from ..models import ItemInfo, FileInfo, TVShowsInfo
-from ..utils.common import ClientManager
-from typing import Union, Optional
-
-def parse_playback_info(data, media_source_id: Optional[str] = None) -> FileInfo | list[FileInfo]:
-    """解析 PlaybackInfo 返回的播放信息
-    
-    Args:
-        data (dict): Emby PlaybackInfo 返回的json数据
-        media_source_id (str): Emby MediaSource ID
-    Returns:
-        FileInfo: 包含文件信息的dataclass
-        list[FileInfo]: 没有指定MediaSourceId时，返回所有文件信息的列表
-    """
-    if media_source_id is None:
-        all_source = []
-        for i in data['MediaSources']:
-            all_source.append(FileInfo(
-                id=i.get('Id'),
-                path=i.get('Path'),
-                bitrate=i.get('Bitrate', 27962026),
-                size=i.get('Size', 0),
-                container=i.get('Container', None),
-                # 获取15秒的缓存文件大小， 并取整
-                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 20),
-                name=i.get('Name'),
-                # 是否为远程流
-                is_strm=i.get('IsRemote', False)
-            ))
-        return all_source
-
-    for i in data['MediaSources']:
-        if i['Id'] == media_source_id:
-            return FileInfo(
-                id = i.get('Id'),
-                path=i.get('Path'),
-                bitrate=i.get('Bitrate', 27962026),
-                size=i.get('Size', 0),
-                container=i.get('Container', None),
-                # 获取15秒的缓存文件大小， 并取整
-                cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 20),
-                name=i.get('Name'),
-                # 是否为远程流
-                is_strm=i.get('IsRemote', False)
-            )
-    # can't find the matched MediaSourceId in MediaSources
-    raise HTTPException(status_code=500, detail="Can't match MediaSourceId")
+from ..models import ItemInfo, FileInfo
+from ..utils.helpers import request_emby_json, emby_api, build_item_info, build_playback_info
+from typing import Optional
 
 async def get_item_info(item_id: str, api_key: str, user_id: Optional[str] = None) -> Optional[ItemInfo]:
     """获取Emby Item信息
@@ -61,46 +15,17 @@ async def get_item_info(item_id: str, api_key: str, user_id: Optional[str] = Non
         ItemInfo: 包含Item信息的dataclass
         None: 如果没有找到Item
     """
-    client = ClientManager.get_client()
     
     if user_id is None:
         user_id = ''
     
-    item_info_api = f"{EMBY_SERVER}/emby/Items?api_key={api_key}&Ids={item_id}&UserId={user_id}"
-    logger.debug(f"Requesting Item Info: {item_info_api}")
+    item_info_api = emby_api("/emby/Items", api_key=api_key, UserId=user_id, Ids=item_id)
     
-    try:
-        resp = await client.get(item_info_api)
-        resp.raise_for_status()
-        resp = resp.json()
-    except Exception as e:
-        logger.error(f"Error: get_item_info failed, {e}")
-        raise HTTPException(status_code=500, detail="Failed to request Emby server, {e}")
+    data = await request_emby_json(item_info_api)
     
-    if not resp['Items']: 
-        logger.debug(f"Item not found: {item_id};")
-        return None
+    assert len(data['Items']) != 0, f"Item not found: {item_id};"
     
-    item_type = resp['Items'][0]['Type'].lower()
-    if item_type != 'movie': item_type = 'episode'
-    
-    if item_type == 'episode':
-    
-        tvshows_info = TVShowsInfo(
-            series_id=int(resp['Items'][0]['SeriesId']),
-            season_id=int(resp['Items'][0]['SeasonId']),
-            index_number=int(resp['Items'][0]['IndexNumber'])
-        )
-    else:
-        tvshows_info = None
-
-    return ItemInfo(
-        item_id=int(item_id),
-        item_type=item_type,
-        # 播放过的进度，未传入user_id时，默认未播放过
-        in_progress=resp['Items'][0].get('UserData', {}).get('PlaybackPositionTicks', 0) > 0,
-        tvshows_info=tvshows_info
-    )
+    return build_item_info(data['Items'][0])
 
 async def get_series_info(series_id: int, season_id: int, api_key: str) -> list[ItemInfo]:
     """获取剧集某一个季的所有Item信息
@@ -113,29 +38,16 @@ async def get_series_info(series_id: int, season_id: int, api_key: str) -> list[
     Returns:
         list[ItemInfo]: 包含Item信息的dataclass列表
     """
-    client = ClientManager.get_client()
-    shows_info_api = f"{EMBY_SERVER}/emby/Shows/{series_id}/Episodes?SeasonId={season_id}&api_key={api_key}"
+    # shows_info_api = f"{EMBY_SERVER}/emby/Shows/{series_id}/Episodes?SeasonId={season_id}&api_key={api_key}"
+    shows_info_api = emby_api(
+        f"/emby/Shows/{series_id}/Episodes",
+        api_key=api_key,
+        SeasonId=season_id,
+    )
     
-    try:
-        req = await client.get(shows_info_api)
-        req.raise_for_status()
-        req = req.json()
-    except Exception as e:
-        logger.error(f"Error: get_series_info failed, {e}")
-        raise HTTPException(status_code=500, detail="Failed to request Emby server, {e}")
+    data = await request_emby_json(shows_info_api)
     
-    items = []
-    for i in req['Items']:
-        items.append(ItemInfo(
-            item_id=int(i['Id']),
-            item_type='episode',
-            tvshows_info=TVShowsInfo(
-                series_id=series_id,
-                season_id=season_id,
-                index_number=int(i['IndexNumber'])
-            )
-        ))
-    return items
+    return [build_item_info(i) for i in data.get('Items', [])]
         
 async def get_next_episode_item_info(series_id: int, season_id: int, item_id: int, api_key: str) -> ItemInfo | None:
     """获取剧集当前一季的下一集信息，并不会返回下一季的第一集
@@ -172,17 +84,41 @@ async def get_file_info(item_id: str, api_key: str, media_source_id: Optional[st
         FileInfo: 包含文件信息的dataclass
         list[FileInfo]: 没有指定MediaSourceId时，返回所有文件信息的列表
     """
-    client = ClientManager.get_client()
+    # "{EMBY_SERVER}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
+    media_info_api = emby_api(
+        f"/emby/Items/{item_id}/PlaybackInfo",
+        api_key=api_key,
+        MediaSourceId=media_source_id,
+    )
     
-    media_info_api = f"{EMBY_SERVER}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
-    logger.info(f"Requested Info URL: {media_info_api}")
+    data = await request_emby_json(media_info_api)
     
-    try:
-        media_info = await client.get(media_info_api)
-        media_info.raise_for_status()
-        media_info = media_info.json()
-    except Exception as e:
-        logger.error(f"Error: failed to request Emby server, {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to request Emby server, {e}")
+    if media_source_id is None:
+        # 如果没有指定MediaSourceId，返回所有文件信息
+        return [build_playback_info(i) for i in data['MediaSources']]   
     
-    return parse_playback_info(media_info, media_source_id)
+    else:
+        # 如果指定了MediaSourceId，返回单个文件信息
+        for i in data['MediaSources']:
+            if i['Id'] == media_source_id:
+                return build_playback_info(i)
+        
+        # 如果没有找到指定的MediaSourceId，返回None
+        return None
+
+async def get_resume_list(user_id: str, api_key: str) -> list[ItemInfo]:
+    """获取用户的播放记录列表
+
+    Args:
+        user_id (str): Emby User ID
+        api_key (str): Emby API Key
+
+    Returns:
+        list[ItemInfo]: 包含Item信息的dataclass列表
+    """
+    
+    resume_list_api = emby_api(f"/emby/Users/{user_id}/Items/Resume", api_key=api_key, Limit=10)
+    
+    data = await request_emby_json(resume_list_api)
+    
+    return [build_item_info(i) for i in data.get('Items', [])]

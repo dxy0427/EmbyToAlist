@@ -2,7 +2,7 @@ import fastapi
 from loguru import logger
 
 from ..utils.helpers import RawLinkManager, ClientManager
-from ..api.emby import parse_playback_info
+from ..api.emby import build_playback_info
 from ..utils.path import transform_file_path, should_redirect_to_alist
 from ..models import FileInfo
 from ..config import EMBY_SERVER, ENABLE_UA_PASSTHROUGH
@@ -39,7 +39,7 @@ async def playback_info(item_id: str, request: fastapi.Request):
             status_code=500,
         )
     
-    files_info: list[FileInfo] = parse_playback_info(data)
+    files_info: list[FileInfo] = build_playback_info(data)
     for index, each in enumerate(files_info):
         
         # 如果需要alist处理，如云盘路径，或strm流，提前通过异步缓存alist直链
