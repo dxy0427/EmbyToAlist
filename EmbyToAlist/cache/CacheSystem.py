@@ -13,6 +13,7 @@ from ..config import CHUNK_SIZE_OF_CHUNKSWITER, MEMORY_CACHE_ONLY, INITIAL_CACHE
 from ..models import FileInfo, RequestInfo, CacheRangeStatus
 from .manager import TaskManager
 from ..utils.common import ClientManager
+from ..utils.database import TinyDBHandler
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
@@ -158,7 +159,10 @@ class CacheSystem():
         self.condition = asyncio.Condition()
         self.cache_file_name = "cache_file_{start}_{end}"
         self.client: httpx.AsyncClient = ClientManager.get_client()
+        
         self.task_manager = TaskManager()
+        self.db = None
+        
         self._initialize()
         
     def _write_version_file(self):
@@ -201,6 +205,8 @@ class CacheSystem():
     def _initialize(self):
         """初始化缓存系统
         """
+        self.db = TinyDBHandler(self.root_dir / "data.json")
+        
         if not self.root_dir.exists():
             self.root_dir.mkdir(parents=True, exist_ok=True)
             self._write_version_file()
@@ -211,18 +217,31 @@ class CacheSystem():
                 logger.warning("Please remove the cache directory")
                 exit(1)
                 
+    def shutdown(self):
+        pass
+    
     async def get_writer(self, request_info: RequestInfo, request_header: dict) -> ChunksWriter:
-        file_id = request_info.file_info.id
-        cache_range_status = request_info.cache_range_status
+        """
+        获取缓存文件的写入器, 如果缓存文件已经存在，则返回已存在的写入器
         
-        task = await self.task_manager.get_task(file_id, cache_range_status)
+        Args:
+            request_info (RequestInfo): 请求信息
+            request_header (dict): 请求头
+            
+        Returns:
+            ChunksWriter: 缓存文件的写入器
+        """
+        file_id = request_info.file_info.id
+        sub_key = 'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+        
+        task = await self.task_manager.get_task(ChunksWriter, file_id, sub_key)
         if task is not None:
             return task
         else:
             writer = ChunksWriter(request_info, request_header)
-            await self.task_manager.create_task(file_id, writer, cache_range_status)
+            await self.task_manager.create_task(ChunksWriter, file_id, writer, sub_key)
             
-            if await self.task_manager.get_task(file_id, CacheRangeStatus.FULLY_CACHED_TAIL) is None:
+            if await self.task_manager.get_task(ChunksWriter, file_id, 'tail') is None:
                 # 预热尾部缓存
                 await self.warm_up_tail_cache(request_info, request_header)
                 
@@ -233,8 +252,9 @@ class CacheSystem():
         """
         预热尾部缓存
         
-        :param request_info: 请求信息
-        :param request_header: 请求头
+        Args:
+            request_info (RequestInfo): 请求信息
+            request_header (dict): 请求头
         """
         # 定义缓存参数
         tail_request_info = copy.deepcopy(request_info)
@@ -247,26 +267,36 @@ class CacheSystem():
         tail_request_info.range_info.request_range = None
         tail_request_info.range_info.response_range = None
         
+        sub_key = 'tail' if tail_request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+        file_id = tail_request_info.file_info.id
+        
         # 防止异步中的竞争条件
-        task = await self.task_manager.get_task(tail_request_info.file_info.id, tail_request_info.cache_range_status)
+        task = await self.task_manager.get_task(ChunksWriter, file_id, sub_key)
         if task is not None:
             logger.debug("Warm up tail cache task already exists, skipping")
             return
         writer = ChunksWriter(tail_request_info, request_header)
-        await self.task_manager.create_task(tail_request_info.file_info.id, writer, tail_request_info.cache_range_status)
+        await self.task_manager.create_task(ChunksWriter, file_id, writer, sub_key)
         await writer.write(await tail_request_info.raw_link_manager.get_raw_url())
         asyncio.create_task(self.write_cache_file(tail_request_info))
         
     async def write_cache_file(self, request_info: RequestInfo):
+        """
+        写入缓存文件
         
-        async def precheck(cache_dir, start, end) -> Optional[Path]:
+        Args:
+            request_info (RequestInfo): 请求信息
+        """
+        async def precheck(cache_dir: Path, start, end) -> Optional[Path]:
             """
             检查缓存文件是否有重叠的范围,或者者是否已经存在
             
-            :param cache_dir: 缓存目录
-            :param start: 将要缓存的文件的起始点
-            :param end: 将要缓存的文件的结束点
-            :return: 重叠的缓存文件
+            Args:
+                cache_dir (Path): 缓存目录
+                start (int): 缓存文件的起始点
+                end (int): 缓存文件的结束点
+            Returns:
+                str: "already_exists" or "pass_check"
             """
             for cache_file in cache_dir.iterdir():
                 if cache_file.is_file() and cache_file.name.startswith("cache_file"):
@@ -282,9 +312,10 @@ class CacheSystem():
         await asyncio.sleep(40)
         
         if MEMORY_CACHE_ONLY:
-            await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)
+            sub_key = 'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+            
+            await self.task_manager.remove_task(ChunksWriter, request_info.file_info.id, sub_key)
             logger.debug("Experimental feature: MEMORY_CACHE_ONLY is enabled, skipping cache file writing")
-            logger.debug(self.task_manager.tasks)
             return
         
         subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
@@ -317,8 +348,9 @@ class CacheSystem():
             async with aiofiles.open(cache_dir / cache_file_name, 'wb') as f:
                 async for chunk in chunk_writer.read(file_start, file_end):
                     await f.write(chunk)
-                    
-        await self.task_manager.remove_task(request_info.file_info.id, request_info.cache_range_status)
+        
+        sub_key = 'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+        await self.task_manager.remove_task(ChunksWriter, request_info.file_info.id, sub_key)
         logger.debug(f"Cache file written: {cache_file_name}")
     
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
@@ -407,13 +439,19 @@ class CacheSystem():
         ) -> AsyncGenerator[bytes, None]:
         """
         读取文件的指定范围，并返回异步生成器。
-    
-        :param file_path: 缓存文件路径
-        :param start_point: 文件读取起始点，HTTP Range 的字节范围
-        :param end_point: 文件读取结束点，None 表示文件末尾，HTTP Range 的字节范围
-        :param chunk_size: 每次读取的字节数，默认为 1MB
+                
+        Args:
+            file_path (str): 缓存文件路径
+            start_point (int): 文件读取起始点，HTTP Range 的字节范围
+            end_point (int): 文件读取结束点，None 表示文件末尾，HTTP Range 的字节范围
+            chunk_size (int): 每次读取的字节数，默认为 1MB
         
-        :return: 生成器，每次返回 chunk_size 大小的数据
+        Yields:
+            bytes: 读取到的数据块
+            
+        Raises:
+            FileNotFoundError: 如果文件不存在
+            Exception: 其他异常
         """
         try:
             async with aiofiles.open(file_path, 'rb') as f:

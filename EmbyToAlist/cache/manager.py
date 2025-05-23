@@ -2,10 +2,9 @@ import asyncio
 
 from loguru import logger
 
-from ..models import CacheRangeStatus
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Any, Union, Type
 if TYPE_CHECKING:
-    from .CacheSystem import ChunksWriter, CacheSystem
+    from .CacheSystem import CacheSystem
 
 class TaskManager():
     """任务管理器
@@ -14,62 +13,66 @@ class TaskManager():
     {file_id: [ChunksWriter, ChunksWriter]}
     """
     def __init__(self):
-        self.tasks = {}
+        self.tasks: dict[str, dict[str, list]] = {}
         self.lock = asyncio.Lock()
+        
+    def _get_type_key(self, task_type: Union[str, Type]) -> str:
+        if isinstance(task_type, str):
+            return task_type
+        else:
+            return task_type.__name__
 
-    async def get_task(self, file_id: str, cache_range_status: CacheRangeStatus) -> Optional[asyncio.Task]:
+    async def get_task(self, task_type: Union[str, Type], file_id: str, sub_key: Any = None) -> Optional[Any]:
         """获取任务，没有任务则返回None
         
-        :param file_id: 文件ID
-        :param cache_range_status: 缓存范围状态
-        
-        :return: 任务对象或None
+        Args:
+            task_type (str): 任务类型
+            file_id (str): 文件ID
+            sub_key (Any): 子键，默认为None
+        Returns:
+            Optional[Any]: 任务实例或None
         """
+        type_key = self._get_type_key(task_type)
         async with self.lock:
-            if file_id in self.tasks:
-                if cache_range_status is CacheRangeStatus.FULLY_CACHED_TAIL:
-                    return self.tasks[file_id][1]
-                else:
-                    return self.tasks[file_id][0]
-            else:
-                return None
+            return self.tasks.get(type_key, {}).get(file_id, {}).get(sub_key, None)
             
-    async def create_task(self, file_id: str, writer: 'ChunksWriter', cache_range_status: CacheRangeStatus):
+    async def create_task(self, task_type: Union[str, Type], file_id: str, task_instance: Any, sub_key: Any = None):
         """添加任务
         
-        :param file_id: 文件ID
-        :param writer: ChunksWriter实例
-        :param cache_range_status: 缓存范围状态
+        Args:
+            task_type (str): 任务类型
+            file_id (str): 文件ID
+            task_instance (Any): 任务实例
+            sub_key (Any): 子键，默认为None   
         """
+        type_key = self._get_type_key(task_type)
         async with self.lock:
-            if file_id not in self.tasks:
-                self.tasks[file_id] = [None, None]
-            if cache_range_status is CacheRangeStatus.FULLY_CACHED_TAIL:
-                self.tasks[file_id][1] = writer
-            else:
-                self.tasks[file_id][0] = writer
-
-    async def remove_task(self, file_id: str, cache_range_status: CacheRangeStatus):
+            self.tasks.setdefault(type_key, {}).setdefault(file_id, {})[sub_key] = task_instance
+            
+    async def remove_task(self, task_type: Union[str, Type], file_id: str, sub_key: Any = None):
         """移除任务
         
-        :param file_id: 文件ID
-        :param cache_range_status: 缓存范围状态
+        Args:
+            task_type (str): 任务类型
+            file_id (str): 文件ID
+            sub_key (Any): 子键，默认为None
         """
+        type_key = self._get_type_key(task_type)
         async with self.lock:
-            if file_id in self.tasks:
-                if cache_range_status is CacheRangeStatus.FULLY_CACHED_TAIL:
-                    self.tasks[file_id][1] = None
-                else:
-                    self.tasks[file_id][0] = None
-                    
-                # 如果两个任务都完成，则删除任务
-                if self.tasks[file_id][0] is None and self.tasks[file_id][1] is None:
-                    del self.tasks[file_id]
-                    logger.debug(f"Task removed for {file_id} with status {cache_range_status}")
+            task_group = self.tasks.get(type_key, {}).get(file_id, {})
+            if sub_key in task_group:
+                del task_group[sub_key]
+                logger.debug(f"Task removed for {file_id} with sub key '{sub_key}'")
 
             else:
-                logger.debug(f"Task not found for {file_id} with status {cache_range_status}")
-                logger.debug(f"Task list: {self.tasks}")
+                logger.debug(f"Task not found for {file_id} with sub key '{sub_key}'")
+            
+            # 清理空结构
+            if not task_group:
+                self.tasks[type_key].pop(file_id, None)
+                if not self.tasks[type_key]:
+                    self.tasks.pop(type_key, None)
+            logger.debug(f"Task list: {self.tasks}")
             
         
 class CacheManager():
