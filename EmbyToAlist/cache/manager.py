@@ -69,24 +69,33 @@ class TaskManager():
             
             # 清理空结构
             if not task_group:
-                self.tasks[type_key].pop(file_id, None)
-                if not self.tasks[type_key]:
-                    self.tasks.pop(type_key, None)
+                file_map = self.tasks.get(type_key)
+                if file_map:
+                    file_map.pop(file_id, None)
+                    if not file_map:
+                        self.tasks.pop(type_key, None) 
             logger.debug(f"Task list: {self.tasks}")
             
         
-class CacheManager():
+class AppContext():
     _cache_system: 'CacheSystem' = None
+    _task_manager: TaskManager = None
     
     @classmethod
     def init(cls, root_dir: str):
-        cls.init_cache(root_dir)
+        cls.init_cache_system(root_dir)
     
     @classmethod
-    def init_cache(cls, root_dir: str):
+    def init_cache_system(cls, root_dir: str):
         from .CacheSystem import CacheSystem
         cls._cache_system = CacheSystem(root_dir)
         
     @classmethod
     def get_cache_system(cls) -> 'CacheSystem':
         return cls._cache_system
+    
+    @classmethod
+    def get_task_manager(cls) -> TaskManager:
+        if cls._task_manager is None:
+            cls._task_manager = TaskManager()
+        return cls._task_manager

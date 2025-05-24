@@ -6,14 +6,14 @@ import uvicorn
 from .config import LOG_LEVEL, CACHE_ENABLE, CACHE_PATH
 from .routes import redirect, playback
 from .utils.common import ClientManager
-from .cache.manager import CacheManager
+from .cache.manager import AppContext
 
 # 使用上下文管理器，创建异步请求客户端
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     ClientManager.init_client()
     if CACHE_ENABLE:
-        CacheManager.init(CACHE_PATH)
+        AppContext.init(CACHE_PATH)
     yield
     await ClientManager.close_client()
 

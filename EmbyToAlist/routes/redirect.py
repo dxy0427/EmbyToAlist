@@ -7,7 +7,7 @@ from ..utils.path import transform_file_path, should_redirect_to_alist
 from ..utils.helpers import extract_api_key, get_content_type, RawLinkManager
 from ..utils.network import reverse_proxy, temporary_redirect
 from ..api.emby import get_item_info, get_file_info
-from ..cache.manager import CacheManager
+from ..cache.manager import AppContext
 
 router = fastapi.APIRouter()
 
@@ -99,7 +99,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
             raw_link_manager=raw_link_manager,
         )
     
-    cache_system = CacheManager.get_cache_system()
+    cache_system = AppContext.get_cache_system()
     cache_exist = cache_system.get_cache_status(request_info)
     
     # 应该走缓存的情况1：请求文件开头

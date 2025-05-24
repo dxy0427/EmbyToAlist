@@ -6,7 +6,7 @@ from loguru import logger
 
 from ..config import FORCE_CLIENT_RECONNECT
 from ..models import RequestInfo, CacheRangeStatus
-from ..cache.manager import CacheManager
+from ..cache.manager import AppContext
 from ..utils.common import ClientManager
 from ..cache.CacheSystem import CacheSystem, ChunksWriter
 from typing import AsyncGenerator, TYPE_CHECKING
@@ -30,7 +30,7 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
     
     :return: fastapi.responses.StreamingResponse
     """
-    cache_system: CacheSystem = CacheManager.get_cache_system()
+    cache_system: CacheSystem = AppContext.get_cache_system()
     
     async def merged_stream() -> AsyncGenerator[bytes, None]:
         

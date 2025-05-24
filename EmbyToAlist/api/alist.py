@@ -8,7 +8,7 @@ from ..config import ALIST_SERVER, ALIST_API_KEY
 from ..utils.common import ClientManager
 
 # return Alist Raw Url
-async def get_alist_raw_url(file_path: str, ua: str, max_retries: int = 3, retry_delay: float = 0.1) -> str:
+async def get_alist_raw_url(file_path: str, ua: str, max_retries: int = 5, retry_delay: float = 0.1) -> str:
     """
     创建或获取Alist Raw Url缓存，缓存时间为5分钟
 

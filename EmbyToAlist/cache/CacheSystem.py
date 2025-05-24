@@ -11,7 +11,7 @@ from loguru import logger
 
 from ..config import CHUNK_SIZE_OF_CHUNKSWITER, MEMORY_CACHE_ONLY, INITIAL_CACHE_SIZE_OF_TAIL
 from ..models import FileInfo, RequestInfo, CacheRangeStatus
-from .manager import TaskManager
+from .manager import AppContext
 from ..utils.common import ClientManager
 from ..utils.database import TinyDBHandler
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
@@ -160,7 +160,7 @@ class CacheSystem():
         self.cache_file_name = "cache_file_{start}_{end}"
         self.client: httpx.AsyncClient = ClientManager.get_client()
         
-        self.task_manager = TaskManager()
+        self.task_manager = AppContext.get_task_manager()
         self.db = None
         
         self._initialize()
