@@ -1,0 +1,342 @@
+import asyncio
+import hashlib
+import copy
+from pathlib import Path
+from weakref import WeakValueDictionary
+
+import aiofiles
+import aiofiles.os
+from loguru import logger
+
+from ..config import MEMORY_CACHE_ONLY, INITIAL_CACHE_SIZE_OF_TAIL
+from ..models import FileInfo, RequestInfo, CacheRangeStatus
+from .manager import AppContext
+from ..utils.common import ClientManager
+from ..utils.database import TinyDBHandler
+from ..cache.writer import ChunksWriter
+from typing import AsyncGenerator, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    import httpx
+    
+class CacheSystem():
+    VERSION: str = "1.0.1"
+    def __init__(self, root_dir: str):
+        self.root_dir: Path = Path(root_dir)
+        self.cache_locks = WeakValueDictionary()
+        self.condition = asyncio.Condition()
+        self.cache_file_name = "cache_file_{start}_{end}"
+        self.client: httpx.AsyncClient = ClientManager.get_client()
+        
+        self.task_manager = AppContext.get_task_manager()
+        self.db = None
+        
+        self._initialize()
+        
+    def _write_version_file(self):
+        """Write the version file to the cache directory.
+        """
+        version_file = self.root_dir / ".version"
+        with version_file.open("w") as f:
+            f.write(self.VERSION)
+            
+    def _read_version_file(self):
+        """Read the version file from the cache directory.
+        """
+        version_file = self.root_dir / ".version"
+        if not version_file.exists():
+            return None
+        return version_file.read_text().strip()
+    
+    def _get_cache_lock(self, subdirname: Path, dirname: Path):
+        # 为每个子目录创建一个锁, 防止不同文件名称的缓存同时写入，导致重复范围的文件
+        key = f"{subdirname}/{dirname}" 
+        if key not in self.cache_locks:
+            # 防止被weakref立即回收
+            lock = asyncio.Lock()
+            self.cache_locks[key] = lock
+        return self.cache_locks[key]
+    
+    def _get_hash_subdirectory_from_path(self, file_info: FileInfo) -> tuple[str, str]:
+        """
+        计算给定文件路径的MD5哈希，并返回哈希值的前两位作为子目录名称 (Cache Key)。
+        缓存键为文件名称+文件大小+文件类型
+
+        :param file_info: 文件信息
+        
+        :return: 哈希值的前两个字符，作为子目录名称
+        """
+        cache_key = f"{file_info.name}:{file_info.size}:{file_info.container}"
+        hash_digest = hashlib.md5(cache_key.encode('utf-8')).hexdigest()
+        return hash_digest[:2], hash_digest # 返回子目录名称和哈希值
+            
+    def _initialize(self):
+        """初始化缓存系统
+        """
+        self.db = TinyDBHandler(self.root_dir / "data.json")
+        
+        if not self.root_dir.exists():
+            self.root_dir.mkdir(parents=True, exist_ok=True)
+            self._write_version_file()
+        else:
+            version = self._read_version_file()
+            if version != self.VERSION:
+                logger.warning(f"Cache version mismatch, current version: {self.VERSION}, cache version: {version}")
+                logger.warning("Please remove the cache directory")
+                exit(1)
+                
+    def shutdown(self):
+        pass
+    
+    async def get_writer(self, request_info: RequestInfo, request_header: dict) -> ChunksWriter:
+        """
+        获取缓存文件的写入器, 如果缓存文件已经存在，则返回已存在的写入器
+        
+        Args:
+            request_info (RequestInfo): 请求信息
+            request_header (dict): 请求头
+            
+        Returns:
+            ChunksWriter: 缓存文件的写入器
+        """
+        file_id = request_info.file_info.id
+        sub_key = 'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+        
+        task = await self.task_manager.get_task(ChunksWriter, file_id, sub_key)
+        if task is not None:
+            return task
+        else:
+            writer = ChunksWriter(request_info, request_header)
+            await self.task_manager.create_task(ChunksWriter, file_id, writer, sub_key)
+            
+            if await self.task_manager.get_task(ChunksWriter, file_id, 'tail') is None:
+                # 预热尾部缓存
+                await self.warm_up_tail_cache(request_info, request_header)
+                
+            asyncio.create_task(self.write_cache_file(request_info))
+            return writer
+    
+    async def warm_up_tail_cache(self, request_info: RequestInfo, request_header: dict):
+        """
+        预热尾部缓存
+        
+        Args:
+            request_info (RequestInfo): 请求信息
+            request_header (dict): 请求头
+        """
+        # 定义缓存参数
+        tail_request_info = copy.deepcopy(request_info)
+        tail_request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
+        tail_request_info.range_info.cache_range = (
+            request_info.file_info.size - 1 - INITIAL_CACHE_SIZE_OF_TAIL, 
+            request_info.file_info.size - 1
+            )
+        
+        tail_request_info.range_info.request_range = None
+        tail_request_info.range_info.response_range = None
+        
+        sub_key = 'tail' if tail_request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+        file_id = tail_request_info.file_info.id
+        
+        # 防止异步中的竞争条件
+        task = await self.task_manager.get_task(ChunksWriter, file_id, sub_key)
+        if task is not None:
+            logger.debug("Warm up tail cache task already exists, skipping")
+            return
+        writer = ChunksWriter(tail_request_info, request_header)
+        await self.task_manager.create_task(ChunksWriter, file_id, writer, sub_key)
+        await writer.write(await tail_request_info.raw_link_manager.get_raw_url())
+        asyncio.create_task(self.write_cache_file(tail_request_info))
+        
+    async def write_cache_file(self, request_info: RequestInfo):
+        """
+        写入缓存文件
+        
+        Args:
+            request_info (RequestInfo): 请求信息
+        """
+        async def precheck(cache_dir: Path, start, end) -> Optional[Path]:
+            """
+            检查缓存文件是否有重叠的范围,或者者是否已经存在
+            
+            Args:
+                cache_dir (Path): 缓存目录
+                start (int): 缓存文件的起始点
+                end (int): 缓存文件的结束点
+            Returns:
+                str: "already_exists" or "pass_check"
+            """
+            for cache_file in cache_dir.iterdir():
+                if cache_file.is_file() and cache_file.name.startswith("cache_file"):
+                    start_point, end_point = map(int, cache_file.stem.split("_")[2:4])
+                    if start >= start_point and end <= end_point:
+                        return "already_exists"
+                    if start <= start_point and end >= end_point:
+                        logger.debug(f"Cache file overlaps: {cache_file}, deleting")
+                        await aiofiles.os.remove(str(cache_file))
+            return "pass_check"
+    
+        # 后台缓存文件，sleep防止占用异步线程
+        await asyncio.sleep(40)
+        
+        if MEMORY_CACHE_ONLY:
+            sub_key = 'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+            
+            await self.task_manager.remove_task(ChunksWriter, request_info.file_info.id, sub_key)
+            logger.debug("Experimental feature: MEMORY_CACHE_ONLY is enabled, skipping cache file writing")
+            return
+        
+        subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
+        cache_dir = self.root_dir / subdirname / dirname
+        if not cache_dir.exists():
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+        # 检查缓存文件是否有重叠的范围
+        check_result = await precheck(cache_dir, request_info.range_info.cache_range[0], request_info.range_info.cache_range[1])
+        if check_result == "already_exists":
+            logger.debug(f"Cache file already exists, skipping: {cache_dir}")
+            return
+        elif check_result == "pass_check":
+            logger.debug(f"Cache file passed check, continuing: {cache_dir}")
+        else:
+            logger.error(f"Cache file check failed: {cache_dir}")
+            return
+        
+        chunk_writer = await self.get_writer(request_info)
+        
+        file_start = chunk_writer.smallest_request_start_point if chunk_writer.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else request_info.range_info.cache_range[0]
+        file_end = request_info.range_info.cache_range[1]
+        
+        cache_file_name = self.cache_file_name.format(
+            start=file_start,
+            end=file_end
+            )
+        
+        async with self._get_cache_lock(subdirname, dirname):
+            async with aiofiles.open(cache_dir / cache_file_name, 'wb') as f:
+                async for chunk in chunk_writer.read(file_start, file_end):
+                    await f.write(chunk)
+        
+        sub_key = 'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+        await self.task_manager.remove_task(ChunksWriter, request_info.file_info.id, sub_key)
+        logger.debug(f"Cache file written: {cache_file_name}")
+    
+    def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
+        """
+        验证缓存文件是否符合 Emby 文件大小，筛选出错误缓存文件
+        
+        实现方式仅为验证文件大小，不验证文件内容
+        
+        :param file_info: 文件信息
+        :param cache_file_range: 缓存文件的起始点和结束点
+        
+        :return: 缓存文件是否符合视频文件大小
+        """
+        # 开头缓存文件
+        if start == 0 and end == file_info.cache_file_size - 1:
+            return True
+        # 末尾缓存文件
+        elif end == file_info.size - 1:
+            return True
+        else:
+            return False
+    
+    def get_cache_status(self, request_info: RequestInfo) -> bool:
+        """检查缓存状态
+        """
+        file_info = request_info.file_info
+        range_info = request_info.range_info
+        
+        subdirname, dirname = self._get_hash_subdirectory_from_path(file_info)
+        cache_dir = self.root_dir / subdirname / dirname
+        
+        if not cache_dir.exists():
+            return False
+        
+        for cache_file in cache_dir.iterdir():
+            if cache_file.is_file():
+                if cache_file.name.startswith("cache_file"):
+                    start, end = map(int, cache_file.stem.split("_")[2:4])
+                    if start <= range_info.request_range[0] <= end:
+                        return True
+                    continue
+                    # if self.verify_cache_file(file_info, start, end):
+                    #     if start <= range_info.request_range[0] <= end:
+                    #         return True
+                    # else:
+                    #     logger.warning(f"Invalid cache file: {cache_file}")
+                    #     cache_file.unlink()
+                    #     return False
+        
+        logger.debug(f"No valid cache file found for {file_info.path}")
+        return False
+    
+    def read_cache_file(self, request_info: RequestInfo) -> AsyncGenerator[bytes, None]:
+        """
+        读取缓存文件，该函数不是异步的，将直接返回一个异步生成器
+        
+        :param request_info: 请求信息
+        
+        :return: function read_file
+        """    
+        subdirname, dirname = self._get_hash_subdirectory_from_path(request_info.file_info)
+        file_dir = self.root_dir / subdirname / dirname
+        range_info = request_info.range_info
+        
+        # 查找与 startPoint 匹配的缓存文件，endPoint 为文件名的一部分
+        for cache_file in file_dir.iterdir():
+            if cache_file.is_file():
+                if cache_file.name.startswith("cache_file"):
+                    start, end = map(int, cache_file.stem.split("_")[2:4])
+                    if start <= range_info.request_range[0] <= end:
+                        # 调整 end_point 的值
+                        adjusted_end = None if request_info.cache_range_status in {CacheRangeStatus.PARTIALLY_CACHED, CacheRangeStatus.FULLY_CACHED_TAIL} else range_info.request_range[1] - range_info.request_range[0]
+                        logger.debug(f"Read Cache: {cache_file}")
+                        
+                        return self.read_file(cache_file, range_info.request_range[0] - start, adjusted_end)
+                
+        logger.error(f"Read Cache Error: There is no matched cache in the cache directory for this file: {request_info.file_info.path}.")
+        return 
+    
+    async def read_file(
+        self,
+        file_path: str, 
+        start_point: int = 0, 
+        end_point: Optional[int] = None, 
+        chunk_size: int = 1024*1024, 
+        ) -> AsyncGenerator[bytes, None]:
+        """
+        读取文件的指定范围，并返回异步生成器。
+                
+        Args:
+            file_path (str): 缓存文件路径
+            start_point (int): 文件读取起始点，HTTP Range 的字节范围
+            end_point (int): 文件读取结束点，None 表示文件末尾，HTTP Range 的字节范围
+            chunk_size (int): 每次读取的字节数，默认为 1MB
+        
+        Yields:
+            bytes: 读取到的数据块
+            
+        Raises:
+            FileNotFoundError: 如果文件不存在
+            Exception: 其他异常
+        """
+        try:
+            async with aiofiles.open(file_path, 'rb') as f:
+                await f.seek(start_point)
+                while True:
+                    if end_point is not None:
+                        # 传入的range为http请求头的range，直接传入默认会少读取1个字节，所以需要+1
+                        remaining = (end_point+1) - await f.tell()
+                        if remaining <= 0:
+                            break
+                        chunk_size = min(chunk_size, remaining)
+                    
+                    data = await f.read(chunk_size)
+                    if not data:
+                        break
+                    yield data
+        except FileNotFoundError:
+            logger.error(f"File not found: {file_path}")
+        except Exception as e:
+            logger.error(f"Unexpected error occurred while reading file: {e}")
+    

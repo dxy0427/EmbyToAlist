@@ -8,7 +8,8 @@ from ..config import FORCE_CLIENT_RECONNECT
 from ..models import RequestInfo, CacheRangeStatus
 from ..cache.manager import AppContext
 from ..utils.common import ClientManager
-from ..cache.CacheSystem import CacheSystem, ChunksWriter
+from ..cache.system import CacheSystem
+from ..cache.writer import ChunksWriter
 from typing import AsyncGenerator, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..utils.helpers import RawLinkManager

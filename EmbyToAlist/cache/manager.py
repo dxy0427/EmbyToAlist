@@ -4,7 +4,7 @@ from loguru import logger
 
 from typing import Optional, TYPE_CHECKING, Any, Union, Type
 if TYPE_CHECKING:
-    from .CacheSystem import CacheSystem
+    from .system import CacheSystem
 
 class TaskManager():
     """任务管理器
@@ -87,7 +87,7 @@ class AppContext():
     
     @classmethod
     def init_cache_system(cls, root_dir: str):
-        from .CacheSystem import CacheSystem
+        from .system import CacheSystem
         cls._cache_system = CacheSystem(root_dir)
         
     @classmethod
