@@ -84,7 +84,7 @@ class RawLinkManager():
         # 如果缓存中没有，则使用 TaskManager 创建唯一任务
         if await self.cache.exists(self.key):
             self.raw_url = await self.cache.get(self.key)
-            logger.debug(f"Cache hit for {self.path}")
+            logger.debug(f"Raw Url Cache hit for {self.path}")
             return
         
         existing_task = await self.task_manager.get_task(RawLinkManager, self.path, sub_key=self.task_sub_key)
@@ -93,12 +93,12 @@ class RawLinkManager():
             return 
         
         task = asyncio.create_task(self._wrapped_download())
-        await self.task_manager.create_task(RawLinkManager, self.path, task, sub_key=self.task_sub_key)
+        await self.task_manager.create_task(RawLinkManager, self.path, task, sub_key=self.task_sub_key, ttl=600)
     
     async def _wrapped_download(self):
         try:
             raw_url = await self.cache_raw_url()
-            await self.cache.set(self.key, raw_url, ttl=600)
+            await self.cache.set(self.key, raw_url, ttl=3600)
             self.raw_url = raw_url
             return raw_url
         finally:

@@ -100,11 +100,12 @@ async def redirect(item_id, filename, request: fastapi.Request):
         )
     
     cache_system = AppContext.get_cache_system()
-    cache_exist = cache_system.get_cache_status(request_info)
+    cache_exist = await cache_system.get_cache_status(request_info)
     
     # 应该走缓存的情况1：请求文件开头
     cache_file_size = file_info.cache_file_size
     if start_byte < cache_file_size:
+        logger.debug("Match cache condition 1: Requesting file start")
         request_info.range_info.cache_range = (0, cache_file_size)
         
         # check video player
@@ -125,16 +126,17 @@ async def redirect(item_id, filename, request: fastapi.Request):
                 resp_header['Content-Type'] = get_content_type(file_info.name)
                 resp_header['X-EmbyToAList-Cache'] = 'Hit'
                 return fastapi.responses.StreamingResponse(
-                    cache_system.read_cache_file(request_info),
+                    await cache_system.get_cache_file(request_info),
                     headers=resp_header,
                     status_code=206,
                 )
             
     # 应该走缓存的情况2：请求文件末尾
     elif file_info.size - start_byte < INITIAL_CACHE_SIZE_OF_TAIL:
+        logger.debug("Match cache condition 2: Requesting file tail")
         request_info.cache_range_status = CacheRangeStatus.FULLY_CACHED_TAIL
         # 默认初始缓存 1MB，之后根据请求头裁切
-        request_info.range_info.cache_range = (file_info.size - 1 - INITIAL_CACHE_SIZE_OF_TAIL, file_info.size -1)
+        request_info.range_info.cache_range = (file_info.size - 1 - INITIAL_CACHE_SIZE_OF_TAIL, file_info.size - 1)
         if cache_exist:
                 resp_header = response_headers_template.copy()
                 resp_header['Content-Type'] = get_content_type(file_info.name)
@@ -142,7 +144,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
                 resp_header['Content-Length'] = f'{file_info.size - start_byte}'
                 resp_header['Content-Range'] = f"bytes {start_byte}-{file_info.size - 1}/{file_info.size}"
                 return fastapi.responses.StreamingResponse(
-                    cache_system.read_cache_file(request_info),
+                    await cache_system.get_cache_file(request_info),
                     headers=resp_header,
                     status_code=206,
                 )
@@ -156,10 +158,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
         
     response_start = start_byte
     request_info.range_info.response_range = (response_start, response_end)
-    
-    source_request_headers = {
-        'User-Agent': request.headers.get('User-Agent'),
-    }
+
     response_headers = response_headers_template.copy()
     response_headers['Content-Type'] = get_content_type(file_info.container)
     response_headers['Content-Range'] = f"bytes {response_start}-{response_end}/{file_info.size}"
@@ -175,8 +174,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
     
     if cache_exist:
         return await reverse_proxy(
-            cache=cache_system.read_cache_file(request_info),
-            request_header=source_request_headers,
+            cache=await cache_system.get_cache_file(request_info),
             response_headers=response_headers,
             request_info=request_info,
         )
@@ -184,7 +182,6 @@ async def redirect(item_id, filename, request: fastapi.Request):
     else:
         return await reverse_proxy(
             cache=None,
-            request_header=source_request_headers,
             response_headers=response_headers,
             request_info=request_info,
         )

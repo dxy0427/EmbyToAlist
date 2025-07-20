@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from loguru import logger
 
@@ -12,9 +13,19 @@ class TaskManager():
     每个文件包含头尾两个任务, head和tail
     {file_id: [ChunksWriter, ChunksWriter]}
     """
-    def __init__(self):
+    def __init__(self, default_ttl: Optional[int] = 300, cleanup_interval: int = 1):
+        """
+        Args:
+            default_ttl (Optional[int], optional): 任务默认过期时间，单位秒
+            cleanup_interval (int, optional): 清理间隔时间，单位秒. Defaults to 1.
+        """
+        self.default_ttl = default_ttl
+        self.cleanup_interval = cleanup_interval
         self.tasks: dict[str, dict[str, list]] = {}
         self.lock = asyncio.Lock()
+        
+        # 启动清理任务
+        asyncio.create_task(self._cleanup_task())
         
     def _get_type_key(self, task_type: Union[str, Type]) -> str:
         if isinstance(task_type, str):
@@ -22,7 +33,28 @@ class TaskManager():
         else:
             return task_type.__name__
 
-    async def get_task(self, task_type: Union[str, Type], file_id: str, sub_key: Any = None) -> Optional[Any]:
+    async def _cleanup_task(self):
+        """
+        定时清理过期的任务
+        """
+        while True:
+            await asyncio.sleep(self.cleanup_interval)
+            now = time.time()
+            async with self.lock:
+                for type_key, file_map in list(self.tasks.items()):
+                    for file_id, sub_map in list(file_map.items()):
+                        for sub_key, (task, expired_at) in list(sub_map.items()):
+                            if expired_at is not None and expired_at <= now:
+                                logger.debug(f"Cleaning up expired task for {file_id} with sub key '{sub_key}'")
+                                await self.remove_task(type_key, file_id, sub_key)
+
+
+    async def get_task(
+        self, 
+        task_type: Union[str, Type], 
+        file_id: str, 
+        sub_key: Any = None
+    ) -> Optional[Any]:
         """获取任务，没有任务则返回None
         
         Args:
@@ -34,10 +66,19 @@ class TaskManager():
         """
         type_key = self._get_type_key(task_type)
         async with self.lock:
-            return self.tasks.get(type_key, {}).get(file_id, {}).get(sub_key, None)
+            # ignore ttl here, just return the task if exists
+            task_tuple = self.tasks.get(type_key, {}).get(file_id, {}).get(sub_key, ())
+            return task_tuple[0] if task_tuple else None
             
-    async def create_task(self, task_type: Union[str, Type], file_id: str, task_instance: Any, sub_key: Any = None):
-        """添加任务
+    async def create_task(
+        self, 
+        task_type: Union[str, Type], 
+        file_id: str, 
+        task_instance: Any, 
+        sub_key: Any = None,
+        ttl: Optional[int] = None
+    ):
+        """添加任务1
         
         Args:
             task_type (str): 任务类型
@@ -45,11 +86,21 @@ class TaskManager():
             task_instance (Any): 任务实例
             sub_key (Any): 子键，默认为None   
         """
+        if ttl is None:
+            ttl = self.default_ttl
+        
         type_key = self._get_type_key(task_type)
+        expired_at = time.time() + ttl
         async with self.lock:
-            self.tasks.setdefault(type_key, {}).setdefault(file_id, {})[sub_key] = task_instance
+            self.tasks.setdefault(type_key, {}).setdefault(file_id, {})[sub_key] = (task_instance, expired_at)
+        logger.debug(f"Task created for {file_id} with sub key '{sub_key}', ttl={ttl}")
             
-    async def remove_task(self, task_type: Union[str, Type], file_id: str, sub_key: Any = None):
+    async def remove_task(
+        self, 
+        task_type: Union[str, Type],
+        file_id: str,
+        sub_key: Any = None
+    ):
         """移除任务
         
         Args:

@@ -13,7 +13,6 @@ from typing import AsyncGenerator, Optional
 class ChunksWriter():
     def __init__(self, 
                  request_info: RequestInfo, 
-                 request_header: dict
                  ):
         self.client: httpx.AsyncClient = ClientManager.get_client()
         
@@ -21,9 +20,7 @@ class ChunksWriter():
         self.cache_data = bytearray()
         
         self.task: asyncio.Task = None
-        self.cache_size: int = 0
-        self.number_of_chunks: int = None
-        
+                
         self.condition = asyncio.Condition()
         self.completed: bool = False
         
@@ -31,7 +28,7 @@ class ChunksWriter():
         self.cache_range_end: int = request_info.range_info.cache_range[1]
         self.cache_range_start: int = request_info.range_info.cache_range[0]
         self.cache_range_status: CacheRangeStatus = request_info.cache_range_status
-        self.request_header: dict = request_header
+        self.request_header: dict = None
         
         # 针对末尾缓存的情况
         # 播放器通常在请求末尾时适当的增加请求范围
@@ -44,20 +41,19 @@ class ChunksWriter():
     def __del__(self):
         logger.debug(f"ChunksWriter: {self.cache_range_start}-{self.cache_range_end} has been deleted")
         
-    async def _write(self, raw_url: str):
+    async def _write(self, raw_url: str, req_fs_header: dict):
         """异步写入缓存文件
         
         :param raw_url: 直链URL
         """
+        self.request_header = req_fs_header
+        
         # 每个chunk 2MB
         chunk_size = CHUNK_SIZE_OF_CHUNKSWITER
-        self.cache_size = self.cache_range_end + chunk_size
-        self.number_of_chunks = (self.cache_size // chunk_size) + 1
         
-        # 修正请求头
         if self.cache_range_start == 0:
             # 读取头部
-            self.request_header['Range'] = f"bytes=0-{self.cache_range_end+chunk_size}"
+            self.request_header['Range'] = f"bytes=0-{self.cache_range_end - 1}"
         else:
             # 读取尾部
             self.request_header['Range'] = f"bytes={self.cache_range_start}-"
@@ -80,13 +76,13 @@ class ChunksWriter():
                 self.completed = True
                 self.condition.notify_all()
                 
-    async def write(self, raw_url: str):
+    async def write(self, raw_url: str, req_fs_header: dict):
         """创建写入异步任务
         
         :param raw_url: 直链URL
         """
         if self.task is None:
-            self.task = asyncio.create_task(self._write(raw_url))
+            self.task = asyncio.create_task(self._write(raw_url, req_fs_header))
         else:
             logger.debug("Write task already exists, skipping")
             return
@@ -128,7 +124,7 @@ class ChunksWriter():
                 logger.error(f"Invalid start point: {start}, cache range start: {self.cache_range_start}")
                 logger.error(f"请尝试提高末尾缓存的阈值")
                 raise HTTPException(status_code=500, detail="Invalid start point")
-            
+                
         current_index = start
         while current_index < end:
             async with self.condition:

@@ -7,24 +7,21 @@ from loguru import logger
 from ..config import FORCE_CLIENT_RECONNECT
 from ..models import RequestInfo, CacheRangeStatus
 from ..cache.manager import AppContext
-from ..utils.common import ClientManager
 from ..cache.system import CacheSystem
-from ..cache.writer import ChunksWriter
 from typing import AsyncGenerator, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..utils.helpers import RawLinkManager
 
-async def reverse_proxy(cache: AsyncGenerator[bytes, None],
-                        request_header: dict,
-                        response_headers: dict,
-                        request_info: RequestInfo,
-                        status_code: int = 206
+async def reverse_proxy(
+    cache: AsyncGenerator[bytes, None],
+    response_headers: dict,
+    request_info: RequestInfo,
+    status_code: int = 206
                         ):
     """
     读取缓存数据和URL，返回合并后的流
 
     :param cache: 缓存数据
-    :param request_header: 请求头，用于请求直链，包含host和range
     :param response_headers: 返回的响应头，包含调整过的range以及content-type
     :param request_info: 请求信息
     :param status_code: HTTP响应状态码，默认为206
@@ -36,55 +33,42 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
     async def merged_stream() -> AsyncGenerator[bytes, None]:
         
         try:
+            data_read = 0
             # 如果缓存存在，先 yield 出缓存数据
             if cache is not None:
+                logger.debug("Cache exists, yielding from cache")
                 async for chunk in cache:
+                    data_read += len(chunk)
+                    logger.debug(f"Total data read from cache: {data_read} bytes")
                     yield chunk
             else:
+                logger.debug("Cache is None, fetching from backend")
                 # 当缓存不存在且允许写缓存时，获取缓存写入器
                 if request_info.cache_range_status != CacheRangeStatus.NOT_CACHED:
-                    raw_link_manager = request_info.raw_link_manager
-                    raw_url = await raw_link_manager.get_raw_url()
-    
-                    request_header['host'] = raw_url.split('/')[2]
-                    
-                    writer: ChunksWriter = await cache_system.get_writer(request_info, request_header)
-                    await writer.write(raw_url)
-
-                    start, end = request_info.range_info.response_range
+                    # 创建写入缓存任务
+                    await cache_system.start_write_cache_file(
+                        request_info
+                    )
+                    # 获取缓存读取器
+                    data = await cache_system.get_cache_file(
+                        request_info
+                    )
                    
-                    data_read = 0
-                    if request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
-                        if not request_info.is_HIGH_COMPAT_MEDIA_CLIENTS and not request_info.is_LOW_COMPAT_MEDIA_CLIENTS:
-                            async for chunk in writer.read(start, None):
-                                data_read += len(chunk)
-                                yield chunk
+                    logger.debug("Start merged_stream")
                     
-                    async for chunk in writer.read(start, end):
+                    async for chunk in data:
                         data_read += len(chunk)
                         yield chunk
                     
-                    logger.debug(f"Expected data read: {end - start + 1}, Actual data read: {data_read}")
-                    logger.debug(f"Read from {start} to {end}")
+            resp_s, resp_e = request_info.range_info.response_range
+            logger.debug(f"Expected data read: {resp_e - resp_s + 1}, Actual data read: {data_read}")
+            logger.debug(f"Read from {resp_s} to {resp_e}")
                     
             if not request_info.is_HIGH_COMPAT_MEDIA_CLIENTS and not request_info.is_LOW_COMPAT_MEDIA_CLIENTS:
                 # 不是末尾则打断
                 if FORCE_CLIENT_RECONNECT and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
                     logger.info("Cache exhausted, breaking the connection")
                     raise ForcedReconnectError()
-                
-            if request_info.is_LOW_COMPAT_MEDIA_CLIENTS and request_info.cache_range_status == CacheRangeStatus.PARTIALLY_CACHED:
-                # 低兼容播放器，反向代理后端
-                logger.info("Streaming from backend...")
-                client = ClientManager.get_client()
-                request_header['range'] = f"bytes={request_info.range_info.cache_range[1]+1}-"
-                async with client.stream(method="GET", url=raw_url, headers=request_header) as response:
-                    if response.status_code != 206:
-                        logger.error(f"Reverse_proxy failed, {response.status_code}")
-                        raise fastapi.HTTPException(status_code=500, detail="Reverse Proxy Failed")
-                    
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
                     
         except ForcedReconnectError as e:
             logger.info(f"Expected ForcedReconnectError: {e}")
@@ -92,8 +76,10 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
         except Exception as e:
             logger.error(f"Reverse_proxy failed, {e}")
             raise fastapi.HTTPException(status_code=500, detail="Reverse Proxy Failed")
+        except asyncio.CancelledError:
+            logger.warning("Streaming cancelled by client")
+            raise
         
-    
     logger.debug(f"Response Headers: {response_headers}")
     return fastapi.responses.StreamingResponse(
         merged_stream(), 
