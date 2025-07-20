@@ -189,14 +189,14 @@ class CacheSystem():
         Returns:
             bool: 是否已缓存
         """
-        return await self.storage.is_cached(
-            file_info=request_info.file_info,
-            range_info=request_info.range_info
-        ) or await self.task_manager.get_task(
+        return (await self.task_manager.get_task(
             ChunksWriter, 
             request_info.file_info.id, 
             'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
-        ) is not None
+        ) is not None) or (await self.storage.is_cached(
+            file_info=request_info.file_info,
+            range_info=request_info.range_info
+        ))
 
     async def cache_next_episode(self):
         pass

@@ -38,15 +38,19 @@ class TaskManager():
         定时清理过期的任务
         """
         while True:
-            await asyncio.sleep(self.cleanup_interval)
             now = time.time()
+            expired = []
             async with self.lock:
                 for type_key, file_map in list(self.tasks.items()):
                     for file_id, sub_map in list(file_map.items()):
                         for sub_key, (task, expired_at) in list(sub_map.items()):
                             if expired_at is not None and expired_at <= now:
                                 logger.debug(f"Cleaning up expired task for {file_id} with sub key '{sub_key}'")
-                                await self.remove_task(type_key, file_id, sub_key)
+                                expired.append((type_key, file_id, sub_key))
+                                
+            for type_key, file_id, sub_key in expired:
+                await self.remove_task(type_key, file_id, sub_key)
+            await asyncio.sleep(self.cleanup_interval)
 
 
     async def get_task(

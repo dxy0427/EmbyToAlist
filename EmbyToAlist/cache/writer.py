@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import httpx
 from fastapi import HTTPException
@@ -60,6 +61,7 @@ class ChunksWriter():
 
         logger.debug(f"Header of File Source Request: {self.request_header}")
 
+        before = time.time()
         async with self.client.stream("GET", raw_url, headers=self.request_header) as response:
             if response.status_code != 206:
                 raise ValueError(f"Expected 206 response, got {response.status_code}")
@@ -75,7 +77,9 @@ class ChunksWriter():
                 logger.debug("======== Cache write completed =======")
                 self.completed = True
                 self.condition.notify_all()
-                
+        now = time.time()
+        logger.debug(f"Cache write completed in {now - before:.2f} seconds")
+        
     async def write(self, raw_url: str, req_fs_header: dict):
         """创建写入异步任务
         
@@ -124,7 +128,7 @@ class ChunksWriter():
                 logger.error(f"Invalid start point: {start}, cache range start: {self.cache_range_start}")
                 logger.error(f"请尝试提高末尾缓存的阈值")
                 raise HTTPException(status_code=500, detail="Invalid start point")
-                
+
         current_index = start
         while current_index < end:
             async with self.condition:
