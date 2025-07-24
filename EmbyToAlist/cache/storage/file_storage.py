@@ -10,6 +10,7 @@ from loguru import logger
 from ...models import RequestInfo, CacheRangeStatus, FileInfo, RangeInfo
 from ...config import MEMORY_CACHE_ONLY
 from ..writer import ChunksWriter
+from ...utils.database import TinyDBHandler
 from typing import Optional, AsyncGenerator, Callable
 
 class FileStorage:
@@ -19,7 +20,10 @@ class FileStorage:
         self.cache_locks = WeakValueDictionary()
         self.root_dir.mkdir(parents=True, exist_ok=True)
         
+        self.db = None
+        
         self._check_version()
+        self._initialize_db()
     
     def _check_version(self):
         version_file = self.root_dir / ".version"
@@ -31,7 +35,33 @@ class FileStorage:
             if current_version != self.version:
                 logger.error(f"Cache version mismatch, please clear the cache directory: {self.root_dir} before using.")
                 raise RuntimeError(f"Cache version mismatch: expected {self.version}, found {current_version}")
-   
+            
+    def _initialize_db(self):
+        """
+        初始化数据库
+        """
+        self.db = TinyDBHandler(self.root_dir / "data.json")
+        self.db.set_table('system_info')
+        
+        # 检查系统信息表是否为空，如果为空则插入初始化信息
+        if not self.db.get_all():
+            info = {
+                'version': self.version,
+                'root_dir': str(self.root_dir),
+                'cache_size': 0, # unit: bytes
+                'cache_count': 0,
+            }
+            self.db.insert_one(info)
+        else:
+            # 如果非空，检查版本是否匹配
+            version = self.db.get_all()[0].get('version', None)
+            if version != self.version:
+                logger.error(f"Cache version mismatch, please clear the cache directory: {self.root_dir} before using.")
+                raise RuntimeError(f"Cache version mismatch: expected {self.version}, found {version}")
+
+        # 初始化缓存文件表
+        self.db.set_table('cache_files')
+        
     # @deprecate         
     # def _get_hash_subdirectory_from_path(self, file_info: FileInfo) -> tuple[str, str]:
     #     """
@@ -181,6 +211,12 @@ class FileStorage:
                 s, e = map(int, f.stem.split("_")[2:4])
                 if s <= rs <= e:
                     logger.debug(f"Cache file found: {f}")
+                    # 更新最后读取时间
+                    self.db.set_table('cache_files')
+                    self.db.update(
+                        fields={'last_read_time': f.stat().st_atime},
+                        condition=lambda q: q.path == str(cache_dir)
+                    )
                     return f
                 
         logger.debug(f"No valid cache file found for {file_info.path}")
@@ -227,10 +263,49 @@ class FileStorage:
             async with aiofiles.open(temp_path, 'wb') as f:
                 async for chunk in writer.read(start, end):
                     await f.write(chunk)
-                    
+            
             final_path = cache_dir / fname
             await aiofiles.os.rename(temp_path, final_path)
             logger.info(f"Cache file written: {final_path}")
+            await self._update_cache_stats(final_path)
+        
+    async def _update_cache_stats(self, file_path: Path):
+        """
+        更新缓存统计信息
+        """
+        file_size = file_path.stat().st_size
+        cache_dir = file_path.parent
+
+        self.db.set_table('cache_files')
+        # 检查缓存目录是否已存在
+        if self.db.search(lambda q: q.path == str(cache_dir)):
+            # 如果存在，则只更新大小
+            self.db.update(
+                fields=lambda doc: {'size': doc.get('size', 0) + file_size},
+                condition=lambda q: q.path == str(cache_dir)
+            )
+        else:
+            # 如果不存在，则插入新记录并增加缓存计数
+            self.db.insert_one({
+                'path': str(cache_dir),
+                'size': file_size,
+                'created_at': file_path.stat().st_ctime,
+                'last_read_time': file_path.stat().st_atime,
+                'score': 100  # 初始分数
+            })
+            self.db.set_table('system_info')
+            self.db.update(
+                condition=lambda q: q.version == self.version,
+                fields=lambda doc: {'cache_count': doc.get('cache_count', 0) + 1}
+            )
+
+        # 总是更新总缓存大小
+        self.db.set_table('system_info')
+        self.db.update(
+            condition=lambda q: q.version == self.version,
+            fields=lambda doc: {'cache_size': doc.get('cache_size', 0) + file_size}
+        )
+
     async def read_from_disk(
         self,
         file_info: FileInfo,
