@@ -18,6 +18,7 @@ class FileStorage:
         self.root_dir = Path(root_dir)
         self.version = version
         self.cache_locks = WeakValueDictionary()
+        self.db_lock = asyncio.Lock()
         self.root_dir.mkdir(parents=True, exist_ok=True)
         
         self.db = None
@@ -278,14 +279,10 @@ class FileStorage:
 
         self.db.set_table('cache_files')
         # 检查缓存目录是否已存在
-        if self.db.search(lambda q: q.path == str(cache_dir)):
-            # 如果存在，则只更新大小
-            self.db.update(
-                fields=lambda doc: {'size': doc.get('size', 0) + file_size},
-                condition=lambda q: q.path == str(cache_dir)
-            )
-        else:
-            # 如果不存在，则插入新记录并增加缓存计数
+        is_new = not self.db.search(lambda q: q.path == str(cache_dir))
+        
+        if is_new:
+            # 如果不存在，则插入新记录
             self.db.insert_one({
                 'path': str(cache_dir),
                 'size': file_size,
@@ -293,18 +290,27 @@ class FileStorage:
                 'last_read_time': file_path.stat().st_atime,
                 'score': 100  # 初始分数
             })
-            self.db.set_table('system_info')
+        else:
+            # 如果存在，则只更新大小
             self.db.update(
-                condition=lambda q: q.version == self.version,
-                fields=lambda doc: {'cache_count': doc.get('cache_count', 0) + 1}
+                fields=lambda doc: {'size': doc.get('size', 0) + file_size},
+                condition=lambda q: q.path == str(cache_dir)
             )
 
-        # 总是更新总缓存大小
-        self.db.set_table('system_info')
-        self.db.update(
-            condition=lambda q: q.version == self.version,
-            fields=lambda doc: {'cache_size': doc.get('cache_size', 0) + file_size}
-        )
+        # 更新全局统计
+        async with self.db_lock:
+            self.db.set_table('system_info')
+            
+            def update_fields(doc):
+                fields = {'cache_size': doc.get('cache_size', 0) + file_size}
+                if is_new:
+                    fields['cache_count'] = doc.get('cache_count', 0) + 1
+                return fields
+
+            self.db.update(
+                condition=lambda q: q.version == self.version,
+                fields=update_fields
+            )
 
     async def read_from_disk(
         self,

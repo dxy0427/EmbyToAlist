@@ -90,6 +90,15 @@ class CacheSystem():
         writer = ChunksWriter(tail_request_info)
         await self.task_manager.create_task(ChunksWriter, file_id, writer, sub_key, ttl=40)
         await writer.write(await tail_request_info.raw_link_manager.get_raw_url(), req_fs_header)
+        if not MEMORY_CACHE_ONLY:
+            # 缓存写入硬盘
+            asyncio.create_task(
+                self.storage.write_to_disk(
+                    file_info=request_info.file_info,
+                    range_info=request_info.range_info,
+                    writer=writer
+                )
+            )
             
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
         """
@@ -133,7 +142,6 @@ class CacheSystem():
         
         if not MEMORY_CACHE_ONLY:
             # 缓存写入硬盘
-            # 尾部缓存预热也会真正遇到尾部请求时回到这里
             asyncio.create_task(
                 self.storage.write_to_disk(
                     file_info=request_info.file_info,

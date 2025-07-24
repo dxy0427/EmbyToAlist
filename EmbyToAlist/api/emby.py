@@ -5,7 +5,7 @@ from ..utils.helpers import request_emby_json, emby_api, build_item_info, build_
 from typing import Optional
 
 async def get_item_info(item_id: str, api_key: str, user_id: Optional[str] = None) -> Optional[ItemInfo]:
-    """获取Emby Item信息
+    """获取某个Emby Item具体的信息
 
     Args:
         item_id (str): Emby Item ID
@@ -31,8 +31,8 @@ async def get_series_info(series_id: int, season_id: int, api_key: str) -> list[
     """获取剧集某一个季的所有Item信息
 
     Args:
-        series_id (int): Emby Series ID
-        season_id (int): Emby Season ID
+        series_id (int): Emby Series ID，表示剧集（如一部电视剧）的唯一标识符，用于指定要查询的剧集
+        season_id (int): Emby Season ID，表示该剧集下某一季的唯一标识符，用于限定只查询该季的剧集内容
         api_key (str): Emby API Key
 
     Returns:
@@ -49,13 +49,18 @@ async def get_series_info(series_id: int, season_id: int, api_key: str) -> list[
     
     return [build_item_info(i) for i in data.get('Items', [])]
         
-async def get_next_episode_item_info(series_id: int, season_id: int, item_id: int, api_key: str) -> ItemInfo | None:
+async def get_next_episode_item_info(
+    series_id: int, 
+    season_id: int, 
+    item_id: int, 
+    api_key: str
+    ) -> ItemInfo | None:
     """获取剧集当前一季的下一集信息，并不会返回下一季的第一集
 
     Args:
-        series_id (int): Emby Series ID
-        season_id (int): Emby Season ID
-        item_id (int): Emby Item ID
+        series_id (int): Emby Series ID，表示剧集（如一部电视剧）的唯一标识符，用于指定要查询的剧集
+        season_id (int): Emby Season ID，表示该剧集下某一季的唯一标识符，用于限定只查询该季的剧集内容
+        item_id (int): Emby Item ID，表示剧集中的某一集的唯一标识符，用于指定要查询的剧集内容
         api_key (str): Emby API Key
 
     Returns:
