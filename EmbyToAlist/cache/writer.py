@@ -12,9 +12,11 @@ from typing import AsyncGenerator, Optional
 
 
 class ChunksWriter():
-    def __init__(self, 
-                 request_info: RequestInfo, 
-                 ):
+    def __init__(
+        self, 
+        request_info: RequestInfo, 
+    ):
+        
         self.client: httpx.AsyncClient = ClientManager.get_client()
         
         self.queue = asyncio.Queue()

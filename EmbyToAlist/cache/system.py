@@ -24,16 +24,13 @@ class CacheSystem():
         self.storage = FileStorage(self.root_dir, self.VERSION)
         
         self.task_manager = AppContext.get_task_manager()
-        self.db = None
         
         self._initialize()
             
     def _initialize(self):
         """初始化缓存系统
         """
-        self.db = TinyDBHandler(self.root_dir / "data.json")
-        
-        # self.db.set_table('cs_info')
+        pass
                 
     def shutdown(self):
         pass
@@ -168,7 +165,7 @@ class CacheSystem():
             range_info=request_info.range_info
         ):
             logger.debug(f"Cache file found on disk for {request_info.file_info.name}")
-            return self.storage.read_from_disk(
+            return await self.storage.read_from_disk(
                 file_info=request_info.file_info,
                 range_info=request_info.range_info
             )

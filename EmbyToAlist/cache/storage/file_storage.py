@@ -29,6 +29,7 @@ class FileStorage:
         else:
             current_version = version_file.read_text().strip()
             if current_version != self.version:
+                logger.error(f"Cache version mismatch, please clear the cache directory: {self.root_dir} before using.")
                 raise RuntimeError(f"Cache version mismatch: expected {self.version}, found {current_version}")
    
     # @deprecate         
@@ -176,7 +177,7 @@ class FileStorage:
             return False
         
         for f in cache_dir.iterdir():
-            if f.is_file() and f.name.suffix != ".tmp":
+            if f.is_file() and not f.name.endswith(".tmp"):
                 s, e = map(int, f.stem.split("_")[2:4])
                 if s <= rs <= e:
                     logger.debug(f"Cache file found: {f}")
@@ -199,7 +200,13 @@ class FileStorage:
             file_info (FileInfo): 文件信息
             range_info (RangeInfo): 范围信息
         """
-        await asyncio.sleep(20)  # 延迟写入，防止阻塞
+        # await asyncio.sleep(20)  # 延迟写入，防止阻塞
+        
+        # check writer is complete or not every 20 seconds
+        for _ in range(3):
+            if writer.completed:
+                break
+            await asyncio.sleep(20)
         
         cache_dir = self._hash_dir(file_info)
         start, end = range_info.cache_range
@@ -224,8 +231,7 @@ class FileStorage:
             final_path = cache_dir / fname
             await aiofiles.os.rename(temp_path, final_path)
             logger.info(f"Cache file written: {final_path}")
-        
-    def read_from_disk(
+    async def read_from_disk(
         self,
         file_info: FileInfo,
         range_info: RangeInfo
@@ -241,7 +247,7 @@ class FileStorage:
         """
         rs, re = range_info.request_range
         
-        cache_file = self.get_cache_file_path(file_info, range_info)
+        cache_file = await self.get_cache_file_path(file_info, range_info)
         
         return self._stream_file(cache_file, rs, re)
         
