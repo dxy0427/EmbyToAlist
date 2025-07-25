@@ -92,13 +92,19 @@ class CacheSystem():
         await writer.write(await tail_request_info.raw_link_manager.get_raw_url(), req_fs_header)
         if not MEMORY_CACHE_ONLY:
             # 缓存写入硬盘
-            asyncio.create_task(
-                self.storage.write_to_disk(
-                    file_info=request_info.file_info,
-                    range_info=request_info.range_info,
-                    writer=writer
+            disk_writer_key = f"disk_writer_{file_id}_{sub_key}"
+
+            # 检查是否已经有写入任务
+            if await self.task_manager.get_task(object, disk_writer_key) is None:
+                # 创建一个虚拟任务来标记写入操作的开始
+                await self.task_manager.create_task(object, disk_writer_key, object(), sub_key, ttl=60)
+                asyncio.create_task(
+                    self.storage.write_to_disk(
+                        file_info=tail_request_info.file_info,
+                        range_info=tail_request_info.range_info,
+                        writer=writer
+                    )
                 )
-            )
             
     def verify_cache_file(self, file_info: FileInfo, start: int, end: int) -> bool:
         """
@@ -142,13 +148,21 @@ class CacheSystem():
         
         if not MEMORY_CACHE_ONLY:
             # 缓存写入硬盘
-            asyncio.create_task(
-                self.storage.write_to_disk(
-                    file_info=request_info.file_info,
-                    range_info=request_info.range_info,
-                    writer=writer
+            file_id = request_info.file_info.id
+            sub_key = 'tail' if request_info.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else 'head'
+            disk_writer_key = f"disk_writer_{file_id}_{sub_key}"
+
+            # 检查是否已经有写入任务
+            if await self.task_manager.get_task(object, disk_writer_key) is None:
+                # 创建一个虚拟任务来标记写入操作的开始
+                await self.task_manager.create_task(object, disk_writer_key, object(), sub_key, ttl=60)
+                asyncio.create_task(
+                    self.storage.write_to_disk(
+                        file_info=request_info.file_info,
+                        range_info=request_info.range_info,
+                        writer=writer
+                    )
                 )
-            )
         
     async def get_cache_file(
         self,

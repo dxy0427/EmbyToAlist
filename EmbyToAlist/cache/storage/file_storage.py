@@ -251,16 +251,16 @@ class FileStorage:
         # deprecated
         start = writer.smallest_request_start_point if writer.cache_range_status == CacheRangeStatus.FULLY_CACHED_TAIL else start
         
-        await self._cleanup_overlap_files(cache_dir, start, end)
-        
-        if await self._is_already_fully_cached(cache_dir, start, end):
-            logger.debug(f"Cache file already exists for range {start}-{end}, skipping write")
-            return
-        
         fname = f"cache_file_{start}_{end}"
         temp_path = cache_dir / f"{fname}.tmp"
         
         async with self._get_cache_lock(cache_dir):
+            if await self._is_already_fully_cached(cache_dir, start, end):
+                logger.debug(f"Cache file already exists for range {start}-{end}, skipping write")
+                return
+            
+            await self._cleanup_overlap_files(cache_dir, start, end)
+            
             async with aiofiles.open(temp_path, 'wb') as f:
                 async for chunk in writer.read(start, end):
                     await f.write(chunk)
