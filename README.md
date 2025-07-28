@@ -101,7 +101,7 @@ services:
   location ~* /videos/(\d*)/(stream|original).* {
       proxy_cache off;
       proxy_buffering off;
-      proxy_set_header Host $host;
+      proxy_set_header Host $http_host;
       proxy_set_header Range $http_range;
       proxy_set_header If-Range $http_if_range;
       proxy_set_header X-Real-IP $remote_addr;

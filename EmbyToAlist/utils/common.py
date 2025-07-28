@@ -33,3 +33,19 @@ class ClientManager():
     async def close_client(cls):
         if cls._client is not None:
             await cls._client.aclose()
+
+def get_content_type(container) -> str:
+    """文件格式对应的Content-Type映射"""
+    content_types = {
+        'mp4': 'video/mp4',
+        'webm': 'video/webm',
+        'ogg': 'video/ogg',
+        'avi': 'video/x-msvideo',
+        'mpeg': 'video/mpeg',
+        'mov': 'video/quicktime',
+        'mkv': 'video/x-matroska',
+        'ts': 'video/mp2t',
+    }
+
+    # 返回对应的Content-Type，如果未找到，返回一个默认值
+    return content_types.get(container.lower(), 'application/octet-stream')

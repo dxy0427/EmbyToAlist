@@ -1,7 +1,7 @@
 from loguru import logger
 
-from ..models import ItemInfo, FileInfo
-from ..utils.helpers import request_emby_json, emby_api, build_item_info, build_playback_info
+from ...models import ItemInfo, FileInfo
+from .helpers import build_playback_info, build_item_info, emby_api, request_emby_json
 from typing import Optional
 
 async def get_item_info(item_id: str, api_key: str, user_id: Optional[str] = None) -> Optional[ItemInfo]:
@@ -110,20 +110,3 @@ async def get_file_info(item_id: str, api_key: str, media_source_id: Optional[st
         
         # 如果没有找到指定的MediaSourceId，返回None
         return None
-
-async def get_resume_list(user_id: str, api_key: str) -> list[ItemInfo]:
-    """获取用户的播放记录列表
-
-    Args:
-        user_id (str): Emby User ID
-        api_key (str): Emby API Key
-
-    Returns:
-        list[ItemInfo]: 包含Item信息的dataclass列表
-    """
-    
-    resume_list_api = emby_api(f"/emby/Users/{user_id}/Items/Resume", api_key=api_key, Limit=10)
-    
-    data = await request_emby_json(resume_list_api)
-    
-    return [build_item_info(i) for i in data.get('Items', [])]

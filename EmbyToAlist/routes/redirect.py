@@ -4,9 +4,11 @@ from loguru import logger
 from ..config import CACHE_ENABLE, INITIAL_CACHE_SIZE_OF_TAIL, HIGH_COMPAT_MEDIA_CLIENTS, LOW_COMPAT_MEDIA_CLIENTS
 from ..models import FileInfo, ItemInfo, RequestInfo, CacheRangeStatus, RangeInfo, response_headers_template
 from ..utils.path import transform_file_path, should_redirect_to_alist
-from ..utils.helpers import extract_api_key, get_content_type, RawLinkManager
 from ..utils.network import reverse_proxy, temporary_redirect
-from ..api.emby import get_item_info, get_file_info
+from ..utils.common import get_content_type
+from ..service.alist.manager import RawLinkManager
+from ..service.emby.helpers import extract_api_key
+from ..service.emby.items import get_item_info, get_file_info
 from ..cache.manager import AppContext
 
 router = fastapi.APIRouter()
