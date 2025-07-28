@@ -146,7 +146,7 @@ class FileStorage:
         self,
         file_path: Path,
         start_point: int,
-        end_point: int,
+        end_point: Optional[int],
         chunk_size: int = 1024 * 1024
     ) -> AsyncGenerator[bytes, None]:
         """
@@ -189,7 +189,7 @@ class FileStorage:
         self,
         file_info: FileInfo,
         range_info: RangeInfo
-    ) -> Path:
+    ) -> Optional[tuple[Path, int]]:
         """
         获取可用的缓存文件路径，和_is_already_fully_cached不同，当前函数仅检查start point
         
@@ -197,7 +197,7 @@ class FileStorage:
             file_info (FileInfo): 文件信息
             range_info (RangeInfo): 范围信息
         Returns:
-            bool: 是否已缓存
+            Optional[tuple[Path, int]]: 返回缓存文件路径和起始点，如果没有找到则返回 None
         """
         
         cache_dir = self._hash_dir(file_info)
@@ -218,7 +218,7 @@ class FileStorage:
                         fields={'last_read_time': f.stat().st_atime},
                         condition=lambda q: q.path == str(cache_dir)
                     )
-                    return f
+                    return f, s
                 
         logger.debug(f"No valid cache file found for {file_info.path}")
         return None
@@ -328,10 +328,11 @@ class FileStorage:
         """
         rs, re = range_info.request_range
         
-        cache_file = await self.get_cache_file_path(file_info, range_info)
-        
-        return self._stream_file(cache_file, rs, re)
-        
+        cache_file, fs = await self.get_cache_file_path(file_info, range_info)
+
+        # start 减去 缓存文件的起始点，修正读取位置
+        return self._stream_file(cache_file, rs - fs, re)
+
     async def is_cached(
         self,
         file_info: FileInfo,

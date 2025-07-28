@@ -139,7 +139,7 @@ class CacheSystem():
             'Host': url.split('/')[2],
         }
         
-        await writer.write(await request_info.raw_link_manager.get_raw_url(), req_fs_header)
+        await writer.write(url, req_fs_header)
         
         # 预热尾部缓存
         if await self.task_manager.get_task(ChunksWriter, request_info.file_info.id, 'tail') is None:

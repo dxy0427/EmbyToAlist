@@ -124,8 +124,8 @@ class ChunksWriter():
             # 修正为 start: 5000, end: 10000
             if start >= self.cache_range_start:
                 start = start - self.cache_range_start
-                # http 范围请求的结束位置是包含的，所以需要加1
-                end = end - self.cache_range_start
+                # 请求末尾时，一般end都为None，默认无限大无须修改
+                # end = end - self.cache_range_start
             else:
                 logger.error(f"Invalid start point: {start}, cache range start: {self.cache_range_start}")
                 logger.error(f"请尝试提高末尾缓存的阈值")
