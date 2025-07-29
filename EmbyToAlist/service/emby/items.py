@@ -50,23 +50,25 @@ async def get_series_info(series_id: int, season_id: int, api_key: str) -> list[
     return [build_item_info(i) for i in data.get('Items', [])]
         
 async def get_next_episode_item_info(
-    series_id: int, 
-    season_id: int, 
-    item_id: int, 
+    previous_item_info: ItemInfo,
     api_key: str
     ) -> ItemInfo | None:
     """获取剧集当前一季的下一集信息，并不会返回下一季的第一集
 
     Args:
-        series_id (int): Emby Series ID，表示剧集（如一部电视剧）的唯一标识符，用于指定要查询的剧集
-        season_id (int): Emby Season ID，表示该剧集下某一季的唯一标识符，用于限定只查询该季的剧集内容
-        item_id (int): Emby Item ID，表示剧集中的某一集的唯一标识符，用于指定要查询的剧集内容
+        previous_item_info (ItemInfo): 当前集的Item信息
         api_key (str): Emby API Key
 
     Returns:
         ItemInfo: 包含Item信息的dataclass
         None: 如果没有找到下一集
     """
+    if previous_item_info.item_type != 'Episode':
+        return None
+    
+    series_id = previous_item_info.tvshows_info.series_id
+    season_id = previous_item_info.tvshows_info.season_id
+    item_id = previous_item_info.item_id
     items: list[ItemInfo] = await get_series_info(series_id, season_id, api_key)
     for i in items:
         if i.item_id == item_id:

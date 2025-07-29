@@ -84,6 +84,7 @@ class RequestInfo:
     cache_range_status: CacheRangeStatus = CacheRangeStatus.UNKNOWN
     api_key: Optional[str] = None
     raw_link_manager: Optional['RawLinkManager'] = None
+    user_agent: Optional[str] = None
     is_HIGH_COMPAT_MEDIA_CLIENTS: bool = False
     """ 是否为对 Range 请求支持较好的播放器 """
     is_LOW_COMPAT_MEDIA_CLIENTS: bool = False

@@ -93,6 +93,7 @@ async def redirect(item_id, filename, request: fastapi.Request):
         raw_link_manager=raw_link_manager,
         cache_range_status=None,
         range_info=range_info,
+        user_agent=request.headers.get('User-Agent'),
     )
     
     if any(player in request.headers.get('User-Agent').lower() for player in LOW_COMPAT_MEDIA_CLIENTS):

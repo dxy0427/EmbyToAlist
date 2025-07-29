@@ -8,9 +8,10 @@ from ..config import INITIAL_CACHE_SIZE_OF_TAIL, MEMORY_CACHE_ONLY
 from ..models import FileInfo, RequestInfo, CacheRangeStatus
 from .manager import AppContext
 from ..utils.common import ClientManager
-from ..utils.database import TinyDBHandler
 from ..cache.writer import ChunksWriter
 from ..cache.storage.file_storage import FileStorage
+from ..service.emby.items import get_next_episode_item_info
+from ..service.alist.manager import RawLinkManager
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
@@ -128,8 +129,18 @@ class CacheSystem():
     
     async def start_write_cache_file(
         self,
-        request_info: RequestInfo
+        request_info: RequestInfo,
+        cache_next_episode_tag: bool = False
     ):
+        """
+        开始写入缓存文件
+        
+        Args:
+            request_info (RequestInfo): 请求信息
+            cache_next_episode_tag (bool): 当前缓存任务是否为剧集的下一集缓存任务,防止递归缓存
+        Returns:
+            None
+        """
         writer: ChunksWriter = await self.get_writer(request_info)
         
         url: str = await request_info.raw_link_manager.get_raw_url()
@@ -155,7 +166,7 @@ class CacheSystem():
             # 检查是否已经有写入任务
             if await self.task_manager.get_task(object, disk_writer_key) is None:
                 # 创建一个虚拟任务来标记写入操作的开始
-                await self.task_manager.create_task(object, disk_writer_key, object(), sub_key, ttl=60)
+                await self.task_manager.create_task(object, disk_writer_key, object(), sub_key, ttl=120)
                 asyncio.create_task(
                     self.storage.write_to_disk(
                         file_info=request_info.file_info,
@@ -163,6 +174,11 @@ class CacheSystem():
                         writer=writer
                     )
                 )
+                
+        if not cache_next_episode_tag:
+            asyncio.create_task(
+                self.cache_next_episode(request_info)
+            )     
         
     async def get_cache_file(
         self,
@@ -217,5 +233,43 @@ class CacheSystem():
             range_info=request_info.range_info
         ))
 
-    async def cache_next_episode(self):
-        pass
+    async def cache_next_episode(self, request_info: RequestInfo):
+        """
+        针对剧集：缓存下一集；电影则跳过.
+        应当作为Task放置在主异步循环中
+        
+        Args:
+            request_info (RequestInfo): 请求信息
+            
+        """
+        previous_item_info = request_info.item_info
+        
+        next_item_info = await get_next_episode_item_info(previous_item_info, request_info.api_key)
+        if next_item_info is None:
+            logger.debug(f"No next episode found for {previous_item_info.item_id}")
+            return
+        
+        logger.debug(f"Next episode found: {next_item_info.item_id}")
+        
+        next_raw_link_manager = RawLinkManager(
+            path=next_item_info.file_info.path,
+            is_strm=next_item_info.file_info.is_strm,
+            user_agent=request_info.user_agent or 'EmbyToAlist',
+        )
+        
+        next_request_info = RequestInfo(
+            file_info=next_item_info.file_info,
+            range_info=next_item_info.range_info,
+            raw_link_manager=next_raw_link_manager,
+            item_info=next_item_info,
+            api_key=request_info.api_key,
+            cache_range_status=CacheRangeStatus.PARTIALLY_CACHED
+        )
+        
+        # 检查是否已经缓存
+        if await self.get_cache_status(next_request_info):
+            logger.debug(f"Next episode {next_item_info.item_id} is already cached.")
+            return
+        
+        # 开始缓存下一集
+        await self.start_write_cache_file(next_request_info, cache_next_episode_tag=True)
