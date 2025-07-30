@@ -1,16 +1,18 @@
+# utils.py
+
 import hashlib
 import os
 import re
 import urllib.parse
-
-import fastapi
 import httpx
+import fastapi
 from uvicorn.server import logger
 from aiolimiter import AsyncLimiter
+import asyncio
 
 from config import *
 from components.models import *
-from typing import AsyncGenerator, Tuple
+from typing import AsyncGenerator, Tuple, Optional
 
 # a wrapper function to get the time of the function
 def get_time(func):
@@ -35,42 +37,26 @@ def get_content_type(container) -> str:
         'mkv': 'video/x-matroska',
         'ts': 'video/mp2t',
     }
-
     # 返回对应的Content-Type，如果未找到，返回一个默认值
     return content_types.get(container.lower(), 'application/octet-stream')
 
 def get_hash_subdirectory_from_path(file_path, media_type) -> Tuple[str, str]:
     """
     计算给定文件路径的MD5哈希，并返回哈希值的前两位作为子目录名称。
-    电影：只计算视频文件本身的上层文件夹路径
-    电视剧：计算视频文件本身的上两层文件夹路径
-
-    :param file_path: 文件的路径
-    :param media_type: 媒体类型，电影或剧集
-    
-    :return: 哈希值的前两个字符，作为子目录名称
     """
     parts = file_path.split('/')
-    # 剧集
-    # Example: /mnt/TV/Name/Season 01/Name - S01E01 - Episode Name.mp4 -> Name/Season 01/Name - S01E01 - Episode Name.mp4
     if media_type != 'movie':        
         file_path: str = os.path.join("series", os.path.join(parts[-3], parts[-2], parts[-1]))
-    # 电影
-    # Example: /mnt/Movies/Name (Year)/Name (Year).mp4 -> Name (Year)/Name (Year).mp4
     else:
         file_path: str = os.path.join("movie", os.path.join(parts[-2], parts[-1]))
-
     hasher = hashlib.md5()
     hasher.update(file_path.encode('utf-8'))
     hash_digest = hasher.hexdigest()
     return hash_digest[:2], hash_digest  # 返回子目录名称和哈希值
 
-# True means return Alist Raw Url, False means return Emby Original Url
 def should_redirect_to_alist(file_path: str) -> bool:
     """
     检查文件路径是否在不需要重定向的路径中
-    
-    :param file_path: 系统文件路径，非alist路径
     """
     if any(file_path.startswith(path) for path in not_redirect_paths):
         logger.debug(f"File Path is in notRedirectPaths, return Emby Original Url")
@@ -80,32 +66,21 @@ def should_redirect_to_alist(file_path: str) -> bool:
 
 def transform_file_path(file_path, mount_path_prefix_remove=mount_path_prefix_remove, mount_path_prefix_add=mount_path_prefix_add) -> str:
     """
-    转换 rclone 文件路径或Alist URL，以匹配Alist的API路径格式
-    rclone挂载路径 -> Alist路径
-    Alist直链URL -> Alist路径
+    智能转换文件路径。如果路径是 URL，则直接返回，不再进行修改。
+    这可以从根本上防止 "rawPath: /http:/..." 错误。
     """
-    # 检查是否为Alist直链URL
-    if file_path.startswith('http') and '/d/' in file_path:
-        logger.debug(f"Detected Alist URL: {file_path}")
-        # 使用urllib.parse来处理URL
-        parsed_url = urllib.parse.urlparse(file_path)
-        # 路径通常是 /d/path/to/file, 我们需要 /path/to/file
-        if parsed_url.path.startswith('/d/'):
-            alist_path = parsed_url.path[2:] # 移除 '/d'
-            logger.debug(f"Processed Alist URL. Extracted Path: '{alist_path}'")
-            return alist_path
-        else:
-            logger.warning(f"URL does not seem to be a standard Alist direct link: {file_path}")
+    # 核心修正：如果 Emby 给的路径已经是 URL，直接原样返回，不进行任何处理
+    if file_path.startswith('http://') or file_path.startswith('https://'):
+        logger.debug(f"检测到输入路径为 URL，将直接使用: {file_path}")
+        return file_path
 
-    # 如果不是Alist URL，则执行原有的本地挂载路径转换逻辑
+    # --- 下面是处理普通本地文件路径的旧逻辑，保持不变 ---
     if convert_mount_path:
         try:
             mount_path_prefix_remove = mount_path_prefix_remove.removesuffix("/")
             mount_path_prefix_add = mount_path_prefix_add.removesuffix("/")
-
             if file_path.startswith(mount_path_prefix_remove):
                 file_path = file_path[len(mount_path_prefix_remove):]
-
             if mount_path_prefix_add:
                 file_path = mount_path_prefix_add + file_path
         except Exception as e:
@@ -130,20 +105,65 @@ def extract_api_key(request: fastapi.Request):
                 api_key = match_token.group(1)
     return api_key or emby_key
 
-async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) -> str:
-    """根据文件路径获取Alist Raw Url"""
+async def get_redirected_final_url(url: str, client: httpx.AsyncClient) -> str:
+    """
+    追踪 URL 的重定向，直到找到最终的非重定向地址。
+    """
+    try:
+        current_url = url
+        for i in range(5): # 最多追踪5次，防止无限循环
+            logger.debug(f"正在追踪重定向 (第 {i+1} 次): {current_url}")
+            # 使用 HEAD 请求可以更快地获取响应头，无需下载内容
+            head_resp = await client.head(current_url, allow_redirects=False, timeout=10)
+            
+            if head_resp.is_redirect:
+                current_url = head_resp.headers['location']
+                # 如果重定向的地址是相对路径，则需要拼接成完整 URL
+                if not current_url.startswith('http'):
+                    parsed_original_url = urllib.parse.urlparse(str(head_resp.url))
+                    current_url = urllib.parse.urljoin(f"{parsed_original_url.scheme}://{parsed_original_url.netloc}", current_url)
+                logger.info(f"发现重定向，新 URL: {current_url}")
+                continue
+            
+            logger.info(f"找到最终地址 (状态码 {head_resp.status_code}): {current_url}")
+            return current_url
+        
+        logger.warning("达到最大重定向次数，使用当前 URL。")
+        return current_url
+    except Exception as e:
+        logger.error(f"追踪重定向时发生错误: {e}，将使用原始替换后的 URL。")
+        return url
 
+async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) -> Optional[str]:
+    """
+    智能获取 Alist Raw Url。
+    如果路径是符合规则的 URL，则直接处理并返回；否则，通过 API 获取。
+    """
+    # 核心修正：检查路径是否是需要直接处理的 URL
+    if direct_url_handler["enable"]:
+        for pattern in direct_url_handler["match_patterns"]:
+            if re.match(pattern, file_path):
+                logger.info(f"路径 '{file_path}' 匹配直接URL处理规则，将跳过 Alist API 调用。")
+                
+                # 替换域名
+                direct_url = file_path
+                for old_base, new_base in direct_url_handler["replacement_map"].items():
+                    if direct_url.startswith(old_base):
+                        direct_url = direct_url.replace(old_base, new_base, 1)
+                        logger.info(f"域名已替换，新 URL: {direct_url}")
+                        break
+                
+                # 如果配置了获取最终 URL，则进行追踪
+                if direct_url_handler["resolve_final_url"]:
+                    return await get_redirected_final_url(direct_url, client)
+                else:
+                    return direct_url
+
+    # --- 下面是处理普通本地文件路径的旧逻辑，保持不变 ---
+    logger.debug(f"路径未匹配直接URL规则，将通过 Alist API 获取直链: {file_path}")
     alist_api_url = f"{alist_server}/api/fs/get"
-
-    body = {
-        "path": file_path,
-        "password": ""
-    }
-    header = {
-        "Authorization": alist_key,
-        "Content-Type": "application/json;charset=UTF-8"
-    }
-
+    body = {"path": file_path, "password": ""}
+    header = {"Authorization": alist_key, "Content-Type": "application/json;charset=UTF-8"}
     if ua is not None:
         header['User-Agent'] = ua
 
@@ -156,58 +176,29 @@ async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) 
         raise fastapi.HTTPException(status_code=500, detail="Alist server response timeout")
     except Exception as e:
         logger.error(f"Error: get_alist_raw_url failed, {e}")
-        logger.error(f"Alist Server Return a {req.status_code} Error")
-        logger.error(f"info: {req.text}")
-        raise fastapi.HTTPException(status_code=500, detail="Failed to request Alist server, {e}")
+        logger.error(f"Alist Server Return a {req.status_code} Error. Info: {req.text}")
+        raise fastapi.HTTPException(status_code=500, detail=f"Failed to request Alist server: {e}")
 
     code = req['code']
-
     if code == 200:
         raw_url = req['data']['raw_url']
-        # 替换原始URL为反向代理URL
+        # 这个旧的替换规则已不再需要，因为新功能更强大，但保留以防万一
         if alist_download_url_replacement_map:
-            for path, url in alist_download_url_replacement_map.items():
-                if file_path.startswith(path):
-                    if isinstance(url, list):
-                        hostname = urllib.parse.urlparse(host_url).hostname
-
-                        for u in url:
-                            if hostname in u:
-                                url = u
-                                break
-                        else:
-                            # 都不匹配选第一个
-                            url = url[0]
-                    # 如果URL中包含{host_url}，则替换为host_url
-                    elif host_url is not None and "{host_url}" in url:
-                        url = url.replace("{host_url}/", host_url)
-
-                    if not url.endswith("/"):
-                        url = f"{url}/"
-
-                    # 替换原始URL为反向代理URL
-                    raw_url = re.sub(r'https?:\/\/[^\/]+\/', url, raw_url)
-
+             for old, new in alist_download_url_replacement_map.items():
+                if raw_url.startswith(old):
+                    raw_url = raw_url.replace(old, new, 1)
         return raw_url
-
     elif code == 403:
         logger.error("Alist server response 403 Forbidden, Please check your Alist Key")
-        # return 403, '403 Forbidden, Please check your Alist Key'
         raise fastapi.HTTPException(status_code=500, detail="Alist return 403 Forbidden, Please check your Alist Key")
     else:
         logger.error(f"Error: {req['message']}")
-        # return 500, req['message']        
-        raise fastapi.HTTPException(status_code=500, detail="Alist Server Error")
+        raise fastapi.HTTPException(status_code=500, detail=f"Alist Server Error: {req['message']}")
 
-# used to get the file info from emby server
+
 async def get_file_info(item_id, api_key, media_source_id, client: httpx.AsyncClient) -> FileInfo:
     """
     从Emby服务器获取文件信息
-    
-    :param item_id: Emby Item ID
-    :param MediaSourceId: Emby MediaSource ID
-    :param apiKey: Emby API Key
-    :return: 包含文件信息的字典
     """
     media_info_api = f"{emby_server}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
     logger.info(f"Requested Info URL: {media_info_api}")
@@ -227,7 +218,6 @@ async def get_file_info(item_id, api_key, media_source_id, client: httpx.AsyncCl
                 bitrate=i.get('Bitrate', 27962026),
                 size=i.get('Size', 0),
                 container=i.get('Container', None),
-                # 获取15秒的缓存文件大小， 并取整
                 cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15)
             ))
         return all_source
@@ -239,10 +229,8 @@ async def get_file_info(item_id, api_key, media_source_id, client: httpx.AsyncCl
                 bitrate=i.get('Bitrate', 27962026),
                 size=i.get('Size', 0),
                 container=i.get('Container', None),
-                # 获取15秒的缓存文件大小， 并取整
                 cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15)
             )
-    # can't find the matched MediaSourceId in MediaSources
     raise fastapi.HTTPException(status_code=500, detail="Can't match MediaSourceId")
 
 
@@ -260,11 +248,9 @@ async def get_item_info(item_id, api_key, client) -> ItemInfo:
     if not req['Items']: 
         logger.debug(f"Item not found: {item_id};")
         return None
-
     item_type = req['Items'][0]['Type'].lower()
     if item_type != 'movie': item_type = 'episode'
     season_id = int(req['Items'][0]['SeasonId']) if item_type == 'episode' else None
-
     return ItemInfo(
         item_id=int(item_id),
         item_type=item_type,
@@ -272,7 +258,7 @@ async def get_item_info(item_id, api_key, client) -> ItemInfo:
     )
 
 async def reverse_proxy(cache: AsyncGenerator[bytes, None],
-                        url_task: str,
+                        url_task: asyncio.Task[str],
                         request_header: dict,
                         response_headers: dict,
                         client: httpx.AsyncClient,
@@ -280,15 +266,6 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                         ):
     """
     读取缓存数据和URL，返回合并后的流
-
-    :param cache: 缓存数据
-    :param url_task: 源文件的URL的异步任务
-    :param request_header: 请求头，用于请求直链，包含host和range
-    :param response_headers: 返回的响应头，包含调整过的range以及content-type
-    :param client: HTTPX异步客户端
-    :param status_code: HTTP响应状态码，默认为206
-    
-    :return: fastapi.responses.StreamingResponse
     """
     limiter = AsyncLimiter(10*1024*1024, 1)
     async def merged_stream():
@@ -299,7 +276,6 @@ async def reverse_proxy(cache: AsyncGenerator[bytes, None],
                     yield chunk
                 logger.info("Cache exhausted, streaming from source")
             raw_url = await url_task
-
             request_header['host'] = raw_url.split('/')[2]
             async with client.stream("GET", raw_url, headers=request_header) as response:
                 response.raise_for_status()
