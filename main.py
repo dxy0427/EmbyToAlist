@@ -26,11 +26,6 @@ app = fastapi.FastAPI(lifespan=lifespan)
 async def get_or_cache_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) -> str:
     """创建或获取Alist Raw Url缓存，缓存时间为5分钟"""    
     raw_url = await get_alist_raw_url(file_path, host_url=host_url, ua=ua, client=client)
-    
-    # 最终校验：确保没有多余斜杠前缀
-    if raw_url.startswith(("/http://", "/https://")):
-        raw_url = raw_url[1:]
-    
     logger.info("Alist Raw Url: " + raw_url)
     return raw_url
 
@@ -52,7 +47,16 @@ async def request_handler(expected_status_code: int,
                           background_tasks: fastapi.BackgroundTasks=None,
                           client: httpx.AsyncClient=None
                           ) -> fastapi.Response:
-    """决定反代还是重定向，创建alist缓存"""
+    """决定反代还是重定向，创建alist缓存
+    
+    :param expected_status_code: 期望返回的状态码，302或206
+    :param cache: 内部缓存数据
+    :param request_info: 请求信息
+    :param resp_header: 需要返回的响应头
+    :param client: httpx异步请求客户端
+    
+    :return fastapi.Response: 返回重定向或反代的响应
+    """
 
     if request_info.cache_status != CacheStatus.UNKNOWN and background_tasks is not None and enable_cache_next_episode is True:
         background_tasks.add_task(cache_next_episode, request_info=request_info, api_key=request_info.api_key, client=client)
@@ -72,6 +76,7 @@ async def request_handler(expected_status_code: int,
 
         if cache_status == CacheStatus.MISS:
             # Case 1: Requested range is entirely beyond the cache
+            # Prepare Range header
             if end_byte is not None:
                 source_range_header = f"bytes={start_byte}-{end_byte - 1}"
             else:
@@ -260,6 +265,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
             request_info.cache_status = CacheStatus.HIT
 
         # 如果请求末尾在cache范围内
+        # 如果请求末尾在缓存文件大小之外，取缓存文件大小；否则取请求末尾
         cache_end_byte = cache_file_size if request_info.cache_status == CacheStatus.PARTIAL else end_byte
         resp_end_byte = file_info.size - 1 if end_byte is None or end_byte > cache_end_byte else cache_end_byte
 
@@ -273,6 +279,8 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
                 'X-EmbyToAList-Cache': 'Hit',
             }
             logger.info("Cached file exists and is valid")
+            # 返回缓存内容和调整后的响应头
+
             return await request_handler(
                 expected_status_code=206, 
                 cache=read_cache_file(request_info), 
@@ -282,6 +290,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
                 client=app.requests_client
                 )
         else:
+            # 后台任务缓存文件
             background_tasks.add_task(
                 write_cache_file,
                 item_id,
@@ -290,6 +299,8 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
                 client=app.requests_client
                 )
             logger.info("Started background task to write cache file.")
+
+            # 重定向到原始URL
             return await request_handler(
                 expected_status_code=302,
                 request_info=request_info,
@@ -319,6 +330,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
             }
 
             logger.info("Cached file exists and is valid")
+            # 返回缓存内容和调整后的响应头
             logger.debug("Response Range Header: " + f"bytes {start_byte}-{resp_end_byte}/{file_info.size}")
             logger.debug("Response Content-Length: " + f'{resp_file_size}')
             return fastapi.responses.StreamingResponse(
@@ -327,6 +339,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
                 status_code=206
                 )
         else:
+            # 后台任务缓存文件
             background_tasks.add_task(
                 write_cache_file, 
                 item_id=item_id,
@@ -335,6 +348,8 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
                 client=app.requests_client
                 )
             logger.info("Started background task to write cache file.")
+
+            # 重定向到原始URL
             return await request_handler(
                 expected_status_code=302, 
                 request_info=request_info,
@@ -390,6 +405,7 @@ async def webhook(request: fastapi.Request):
             deleted_item_info = ItemInfo(
                 item_id=data.get('Item').get('Id'),
                 item_type=data.get('Item').get('Type'),
+                # 电影：如果不存在SeasonId则为None
                 season_id=data.get('Item').get('SeasonId', None)
                 )
 
