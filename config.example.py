@@ -20,6 +20,33 @@ alist_download_url_replacement_map = {
     "/tv": ["https://download.example.com/tv/", "https://download.example2.net/tv/"],
 }
 
+#strm文件的
+direct_url_handler = {
+    # 总开关
+    "enable": True,
+    
+    # 是否追踪重定向，获取最终的真实视频地址。
+    # True:  后台缓存和前台播放都会使用最终的真实链接。兼容性最好，推荐！
+    # False: 后台缓存会强制获取真实链接，但前台播放超过15秒后会重定向到“跳板链接”，
+    #        这需要您的播放器能很好地处理302跳转。
+    "resolve_final_url": False,
+    
+    # URL 路径匹配规则 (使用正则表达式)
+    # 此规则会匹配 Emby 媒体库中的“路径”。
+    # 如果您的 Emby 路径本身就是一个 Alist 的 http 链接，就可以用此功能。
+    # 示例: 匹配所有由本地 Alist (127.0.0.1:5244) 生成的链接。
+    "match_patterns": [
+        r"^http:\/\/127\.0\.0\.1:5244.*"
+    ],
+
+    # URL 域名替换规则
+    # 将匹配到的路径中的某一部分替换为新的内容。
+    # 示例: 将本地 Alist 地址替换为公网可访问的域名。
+    "replacement_map": {
+        "http://127.0.0.1:5244": "https://xxx.xxx.com"
+    }
+}
+
 not_redirect_paths = ['/mnt/localpath/']
 
 # If you store your media files on OneDrive and use rclone for processing them (uploading and mounting on the server),
@@ -44,5 +71,9 @@ enable_cache_next_episode = False
 cache_path = "/app/cache"
 # 缓存文件名称黑名单，文件名称包含以下字符串的文件不会被缓存，支持正则表达式
 cache_blacklist = []
+
+# 是否强制将 http:// 的重定向地址改为 https://
+# 适用于源站无证书，但通过CDN实现HTTPS访问的场景
+FORCE_HTTPS_REDIRECT = True
 
 log_level = "INFO"
