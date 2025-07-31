@@ -1,4 +1,4 @@
-# utils.py
+# components/utils.py
 
 import hashlib
 import os
@@ -12,7 +12,7 @@ import asyncio
 
 from config import *
 from components.models import *
-from typing import AsyncGenerator, Tuple, Optional
+from typing import AsyncGenerator, Tuple, Optional, List
 
 def get_time(func):
     def wrapper(*args, **kwargs):
@@ -53,7 +53,6 @@ def transform_file_path(file_path, mount_path_prefix_remove=mount_path_prefix_re
     if file_path.startswith('http://') or file_path.startswith('https://'):
         logger.debug(f"检测到输入路径为 URL，将直接使用: {file_path}")
         return file_path
-    
     if convert_mount_path:
         try:
             mount_path_prefix_remove = mount_path_prefix_remove.removesuffix("/")
@@ -64,12 +63,10 @@ def transform_file_path(file_path, mount_path_prefix_remove=mount_path_prefix_re
                 file_path = mount_path_prefix_add + file_path
         except Exception as e:
             print(f"Error: convert_mount_path failed, {e}")
-
     if convert_special_chars:
         for char in special_chars_list:
             if char in file_path:
                 file_path = file_path.replace(char, '‛'+char)
-
     if convert_mount_path or convert_special_chars: logger.debug(f"Processed File Path: {file_path}")
     return file_path
 
@@ -89,7 +86,6 @@ async def get_redirected_final_url(url: str, client: httpx.AsyncClient) -> str:
         for i in range(5):
             logger.debug(f"正在追踪重定向 (第 {i+1} 次): {current_url}")
             head_resp = await client.head(current_url, follow_redirects=False, timeout=10)
-            
             if head_resp.is_redirect:
                 current_url = head_resp.headers['location']
                 if not current_url.startswith('http'):
@@ -97,10 +93,8 @@ async def get_redirected_final_url(url: str, client: httpx.AsyncClient) -> str:
                     current_url = urllib.parse.urljoin(f"{parsed_original_url.scheme}://{parsed_original_url.netloc}", current_url)
                 logger.info(f"发现重定向，新 URL: {current_url}")
                 continue
-            
             logger.info(f"找到最终地址 (状态码 {head_resp.status_code}): {current_url}")
             return current_url
-        
         logger.warning("达到最大重定向次数，使用当前 URL。")
         return current_url
     except Exception as e:
@@ -118,19 +112,18 @@ async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) 
                         direct_url = direct_url.replace(old_base, new_base, 1)
                         logger.info(f"域名已替换，新 URL: {direct_url}")
                         break
-                
+                # 注意：此处我们仍然遵守 resolve_final_url 开关
+                # 主要的强制解析逻辑放在了 cache.py 中
                 if direct_url_handler["resolve_final_url"]:
                     return await get_redirected_final_url(direct_url, client)
                 else:
                     return direct_url
-
     logger.debug(f"路径未匹配直接URL规则，将通过 Alist API 获取直链: {file_path}")
     alist_api_url = f"{alist_server}/api/fs/get"
     body = {"path": file_path, "password": ""}
     header = {"Authorization": alist_key, "Content-Type": "application/json;charset=UTF-8"}
     if ua is not None:
         header['User-Agent'] = ua
-
     try:
         req = await client.post(alist_api_url, json=body, headers=header)
         req.raise_for_status()
@@ -142,7 +135,6 @@ async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) 
         logger.error(f"Error: get_alist_raw_url failed, {e}")
         logger.error(f"Alist Server Return a {req.status_code} Error. Info: {req.text}")
         raise fastapi.HTTPException(status_code=500, detail=f"Failed to request Alist server: {e}")
-
     code = req['code']
     if code == 200:
         return req['data']['raw_url']
@@ -153,27 +145,46 @@ async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) 
         logger.error(f"Error: {req['message']}")
         raise fastapi.HTTPException(status_code=500, detail=f"Alist Server Error: {req['message']}")
 
-async def get_file_info(item_id, api_key, media_source_id, client: httpx.AsyncClient) -> FileInfo:
-    media_info_api = f"{emby_server}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
+async def get_file_info(item_id, api_key, media_source_id, client: httpx.AsyncClient) -> List[FileInfo]:
+    ### 核心修改：让函数返回一个列表，以支持多版本文件，并修正了 `cache_next_episode` 的bug ###
+    if media_source_id:
+        media_info_api = f"{emby_server}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
+    else:
+        media_info_api = f"{emby_server}/emby/Items/{item_id}/PlaybackInfo?api_key={api_key}"
     logger.info(f"Requested Info URL: {media_info_api}")
     try:
-        media_info = await client.get(media_info_api)
-        media_info.raise_for_status()
-        media_info = media_info.json()
+        media_info_req = await client.get(media_info_api)
+        media_info_req.raise_for_status()
+        media_info = media_info_req.json()
     except Exception as e:
         logger.error(f"Error: failed to request Emby server, {e}")
         raise fastapi.HTTPException(status_code=500, detail=f"Failed to request Emby server, {e}")
-
-    for i in media_info['MediaSources']:
-        if i['Id'] == media_source_id:
-            return FileInfo(
+    file_info_list = []
+    if media_source_id:
+        for i in media_info['MediaSources']:
+            if i['Id'] == media_source_id:
+                file_info_list.append(FileInfo(
+                    path=transform_file_path(i.get('Path')),
+                    bitrate=i.get('Bitrate', 27962026),
+                    size=i.get('Size', 0),
+                    container=i.get('Container', None),
+                    cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15)
+                ))
+                return file_info_list
+        raise fastapi.HTTPException(status_code=500, detail="Can't match provided MediaSourceId")
+    else:
+        if not media_info.get('MediaSources'):
+            logger.error(f"No MediaSources found for Item ID: {item_id}")
+            return []
+        for i in media_info['MediaSources']:
+            file_info_list.append(FileInfo(
                 path=transform_file_path(i.get('Path')),
                 bitrate=i.get('Bitrate', 27962026),
                 size=i.get('Size', 0),
                 container=i.get('Container', None),
                 cache_file_size=int(i.get('Bitrate', 27962026) / 8 * 15)
-            )
-    raise fastapi.HTTPException(status_code=500, detail="Can't match MediaSourceId")
+            ))
+        return file_info_list
 
 async def get_item_info(item_id, api_key, client) -> ItemInfo:
     item_info_api = f"{emby_server}/emby/Items?api_key={api_key}&Ids={item_id}"
