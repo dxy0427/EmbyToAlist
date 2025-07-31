@@ -1,3 +1,5 @@
+# main.py
+
 from contextlib import asynccontextmanager
 
 import fastapi
@@ -29,17 +31,8 @@ async def get_or_cache_alist_raw_url(file_path, host_url, ua, client: httpx.Asyn
     logger.info("Alist Raw Url: " + raw_url)
     return raw_url
 
-# 可以在第一个请求到达时就异步创建alist缓存
-# 重定向：
-# 1. 未启用缓存
-# 2. 请求头不包含Range
-# 3. 中间恢复播放
-# 反代：
-# 1. 无缓存文件（should，目前只是重新代理。todo：缓存重利用）
-# 2. 缓存拼接
-# 只需返回缓存（不需要alist直链）：
-# 1. 请求范围在缓存范围内
-# 2. 请求范围在文件末尾2MB内
+# request_handler 保持原样，用于处理重定向和反代逻辑
+# 我们将在主路由函数中决定何时调用它
 async def request_handler(expected_status_code: int,
                           cache: AsyncGenerator[bytes, None]=None,
                           request_info: RequestInfo=None,
@@ -161,21 +154,25 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
     logger.info(f"Requested Item ID: {item_id}")
     logger.info("MediaFile Mount Path: " + file_info.path)
 
-    # if checkFilePath return False：return Emby originalUrl
+    # 如果在not_redirect_paths中，直接返回Emby原始链接，不进行后续处理
     if not should_redirect_to_alist(file_info.path):
-        # 拼接完整的URL，如果query为空则不加问号
         redirected_url = f"{host_url}preventRedirect{request.url.path}{'?' + request.url.query if request.url.query else ''}"
         logger.info("Redirected Url: " + redirected_url)
         return fastapi.responses.RedirectResponse(url=redirected_url, status_code=302)
 
-    if not cache_blacklist:
-        if any(match_with_regex(file_info.path, pattern) for pattern in cache_blacklist):
-            logger.info("File is in cache blacklist.")
-            return await request_handler(
-                expected_status_code=302,
-                request_info=request_info,
-                client=app.requests_client
-                )
+    # 关键修改1：修正cache_blacklist的匹配参数顺序
+    # 原代码的参数顺序颠倒了，导致黑名单不生效
+    if cache_blacklist and any(match_with_regex(pattern, file_info.path) for pattern in cache_blacklist):
+        logger.info("File is in cache blacklist.")
+        # 为黑名单文件创建Alist直链任务并直接重定向
+        request_info.raw_url_task = asyncio.create_task(
+            get_or_cache_alist_raw_url(file_path=file_info.path, host_url=host_url, ua=ua, client=app.requests_client)
+        )
+        return await request_handler(
+            expected_status_code=302,
+            request_info=request_info,
+            client=app.requests_client
+        )
 
     # 如果满足alist直链条件，提前通过异步缓存alist直链
     request_info.raw_url_task = asyncio.create_task(
@@ -184,8 +181,8 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
             host_url=host_url,
             ua=ua,
             client=app.requests_client
-            )
         )
+    )
 
     # 如果没有启用缓存，直接返回Alist Raw Url
     if not enable_cache:
@@ -193,47 +190,17 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
             expected_status_code=302,
             request_info=request_info,
             client=app.requests_client
-            )
+        )
 
     range_header = request.headers.get('Range', '')
+    # 如果没有Range请求头（如VLC），直接重定向
     if not range_header.startswith('bytes='):
-        logger.warning("Range header is not correctly formatted.")
-        logger.debug(f"Request Headers: {request.headers}")
-
-        request_info.cache_status = CacheStatus.PARTIAL
-        request_info.start_byte = 0
-
-        if get_cache_status(request_info):
-            logger.info("Cached file exists and is valid, response 200.")
-            resp_headers = {
-            'Cache-Control': 'private, no-transform, no-cache',
-            'Content-Length': str(file_info.size),
-            'X-EmbyToAList-Cache': 'Hit',
-        }
-            return await request_handler(
-                expected_status_code=200,
-                cache=read_cache_file(request_info),
-                request_info=request_info,
-                resp_header=resp_headers,
-                background_tasks=background_tasks,
-                client=app.requests_client
-                )
-        else:
-            background_tasks.add_task(
-                write_cache_file,
-                item_id,
-                request_info,
-                request.headers,
-                client=app.requests_client
-                )
-
-            logger.info("Started background task to write cache file.")
-
-            return await request_handler(
-                expected_status_code=302,
-                request_info=request_info,
-                client=app.requests_client
-                )
+        logger.warning("Range header not found or not correctly formatted. Redirecting.")
+        return await request_handler(
+            expected_status_code=302,
+            request_info=request_info,
+            client=app.requests_client
+        )
 
     # 解析Range头，获取请求的起始字节
     bytes_range = range_header.split('=')[1]
@@ -253,23 +220,26 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
             expected_status_code=416,
             request_info=request_info,
             resp_header={'Content-Range': f'bytes */{file_info.size}'}
-            )
+        )
 
     cache_file_size = file_info.cache_file_size
 
-    # 应该走缓存的情况1：请求文件开头
+    # 关键修改2：重构缓存处理逻辑
+    # 场景一：请求落在缓存区域内 (start_byte < cache_file_size)
     if start_byte < cache_file_size:
-        if end_byte is None or end_byte > cache_file_size:
+        if end_byte is None or end_byte >= cache_file_size:
             request_info.cache_status = CacheStatus.PARTIAL
         else:
             request_info.cache_status = CacheStatus.HIT
 
-        # 如果请求末尾在cache范围内
-        # 如果请求末尾在缓存文件大小之外，取缓存文件大小；否则取请求末尾
-        cache_end_byte = cache_file_size if request_info.cache_status == CacheStatus.PARTIAL else end_byte
-        resp_end_byte = file_info.size - 1 if end_byte is None or end_byte > cache_end_byte else cache_end_byte
-
+        # 检查缓存是否存在且有效
         if get_cache_status(request_info):
+            logger.info("Cached file exists and is valid. Serving from cache.")
+            
+            # 核心逻辑：只返回缓存部分。为此，必须精确计算响应头。
+            # 响应的结束点就是缓存的末尾
+            resp_end_byte = cache_file_size - 1
+            
             resp_headers = {
                 'Content-Type': get_content_type(file_info.container),
                 'Accept-Ranges': 'bytes',
@@ -278,48 +248,35 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
                 'Cache-Control': 'private, no-transform, no-cache',
                 'X-EmbyToAList-Cache': 'Hit',
             }
-            logger.info("Cached file exists and is valid")
-            # 返回缓存内容和调整后的响应头
-
-            return await request_handler(
-                expected_status_code=206, 
-                cache=read_cache_file(request_info), 
-                request_info=request_info, 
-                resp_header=resp_headers, 
-                background_tasks=background_tasks, 
-                client=app.requests_client
-                )
+            # 触发下一集缓存
+            if enable_cache_next_episode:
+                background_tasks.add_task(cache_next_episode, request_info=request_info, api_key=api_key, client=app.requests_client)
+            
+            # 直接返回 StreamingResponse，只包含缓存文件的内容
+            return fastapi.responses.StreamingResponse(
+                read_cache_file(request_info),
+                headers=resp_headers,
+                status_code=206
+            )
         else:
-            # 后台任务缓存文件
+            # 缓存不存在，则后台创建缓存，同时对当前用户重定向
+            logger.info("Cache file not found. Starting background task to write cache and redirecting user.")
             background_tasks.add_task(
-                write_cache_file,
-                item_id,
-                request_info,
-                request.headers,
-                client=app.requests_client
-                )
-            logger.info("Started background task to write cache file.")
-
-            # 重定向到原始URL
+                write_cache_file, item_id, request_info, request.headers, client=app.requests_client
+            )
             return await request_handler(
                 expected_status_code=302,
                 request_info=request_info,
-                background_tasks=background_tasks,
                 client=app.requests_client
-                )
+            )
 
-    # 应该走缓存的情况2：请求文件末尾
+    # 场景二：请求落在文件末尾的缓存区
     elif file_info.size - start_byte < 2 * 1024 * 1024:
         request_info.cache_status = CacheStatus.HIT_TAIL
-
+        # 这部分逻辑与原版类似，检查并返回末尾缓存，或后台创建并重定向
         if get_cache_status(request_info):
-            if end_byte is None:
-                resp_end_byte = file_info.size - 1
-                resp_file_size = (resp_end_byte + 1) - start_byte
-            else:
-                resp_end_byte = end_byte
-                resp_file_size = end_byte - start_byte + 1
-
+            resp_end_byte = file_info.size - 1 if end_byte is None else end_byte
+            resp_file_size = resp_end_byte - start_byte + 1
             resp_headers = {
                 'Content-Type': get_content_type(file_info.container),
                 'Accept-Ranges': 'bytes',
@@ -328,54 +285,21 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
                 'Cache-Control': 'private, no-transform, no-cache',
                 'X-EmbyToAList-Cache': 'Hit',
             }
-
-            logger.info("Cached file exists and is valid")
-            # 返回缓存内容和调整后的响应头
-            logger.debug("Response Range Header: " + f"bytes {start_byte}-{resp_end_byte}/{file_info.size}")
-            logger.debug("Response Content-Length: " + f'{resp_file_size}')
-            return fastapi.responses.StreamingResponse(
-                read_cache_file(request_info),
-                headers=resp_headers,
-                status_code=206
-                )
+            return fastapi.responses.StreamingResponse(read_cache_file(request_info), headers=resp_headers, status_code=206)
         else:
-            # 后台任务缓存文件
-            background_tasks.add_task(
-                write_cache_file, 
-                item_id=item_id,
-                request_info=request_info,
-                req_header=request.headers,
-                client=app.requests_client
-                )
-            logger.info("Started background task to write cache file.")
-
-            # 重定向到原始URL
-            return await request_handler(
-                expected_status_code=302, 
-                request_info=request_info,
-                background_tasks=background_tasks,
-                client=app.requests_client
-                )
+            background_tasks.add_task(write_cache_file, item_id, request_info, request.headers, client=app.requests_client)
+            return await request_handler(expected_status_code=302, request_info=request_info, client=app.requests_client)
+            
+    # 场景三：请求完全落在缓存区之外 (这是缓存播放完后，客户端发出的新请求)
     else:
+        logger.info("Request is outside cache range. Redirecting to source.")
         request_info.cache_status = CacheStatus.MISS
-
-        resp_headers = {
-            'Content-Type': get_content_type(file_info.container),
-            'Accept-Ranges': 'bytes',
-            'Content-Range': f'bytes {start_byte}-{file_info.size - 1}/{file_info.size}',
-            'Content-Length': f'{file_info.size - start_byte}',
-            'Cache-Control': 'private, no-transform, no-cache',
-            'X-EmbyToAList-Cache': 'Miss',
-        }
-
-        # 这里用206是因为响应302后vlc可能会出bug，不会跟随重定向，而是继续无限重复请求
+        # 直接重定向到Alist直链
         return await request_handler(
-            expected_status_code=206, 
+            expected_status_code=302, 
             request_info=request_info, 
-            resp_header=resp_headers, 
-            background_tasks=background_tasks, 
             client=app.requests_client
-            )
+        )
 
 @app.post('/webhook')
 async def webhook(request: fastapi.Request):
