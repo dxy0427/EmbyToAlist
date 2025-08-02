@@ -110,8 +110,6 @@ async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) 
                         direct_url = direct_url.replace(old_base, new_base, 1)
                         logger.info(f"域名已替换，新 URL: {direct_url}")
                         break
-                # 注意：此处我们仍然遵守 resolve_final_url 开关
-                # 主要的强制解析逻辑放在了 cache.py 中
                 if direct_url_handler["resolve_final_url"]:
                     return await get_redirected_final_url(direct_url, client)
                 else:
@@ -144,19 +142,29 @@ async def get_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) 
         raise fastapi.HTTPException(status_code=500, detail=f"Alist Server Error: {req['message']}")
 
 async def get_file_info(item_id, api_key, media_source_id, client: httpx.AsyncClient) -> List[FileInfo]:
-    ### 核心修改：让函数返回一个列表，以支持多版本文件，并修正了 `cache_next_episode` 的bug ###
-    if media_source_id:
-        media_info_api = f"{emby_server}/emby/Items/{item_id}/PlaybackInfo?MediaSourceId={media_source_id}&api_key={api_key}"
-    else:
-        media_info_api = f"{emby_server}/emby/Items/{item_id}/PlaybackInfo?api_key={api_key}"
+    media_info_api = f"{emby_server}/emby/Items/{item_id}/PlaybackInfo?{'MediaSourceId=' + media_source_id + '&' if media_source_id else ''}api_key={api_key}"
     logger.info(f"Requested Info URL: {media_info_api}")
-    try:
-        media_info_req = await client.get(media_info_api)
-        media_info_req.raise_for_status()
-        media_info = media_info_req.json()
-    except Exception as e:
-        logger.error(f"Error: failed to request Emby server, {e}")
-        raise fastapi.HTTPException(status_code=500, detail=f"Failed to request Emby server, {e}")
+    retries = 3  # 超时重试3次
+    timeout = 10  # 每次超时10秒
+    for attempt in range(retries):
+        try:
+            media_info_req = await asyncio.wait_for(
+                client.get(media_info_api),
+                timeout=timeout
+            )
+            media_info_req.raise_for_status()
+            media_info = media_info_req.json()
+            break  # 成功则跳出重试
+        except (httpx.ReadTimeout, asyncio.TimeoutError):
+            if attempt == retries - 1:
+                logger.error(f"请求Emby服务器超时，重试{retries}次后失败")
+                raise fastapi.HTTPException(status_code=500, detail="请求Emby服务器超时")
+            logger.warning(f"请求Emby服务器超时，重试第{attempt + 2}次")
+            await asyncio.sleep(1)  # 等待1秒后重试
+        except Exception as e:
+            logger.error(f"Error: failed to request Emby server, {e}")
+            raise fastapi.HTTPException(status_code=500, detail=f"Failed to request Emby server, {e}")
+    
     file_info_list = []
     if media_source_id:
         for i in media_info['MediaSources']:
@@ -187,13 +195,27 @@ async def get_file_info(item_id, api_key, media_source_id, client: httpx.AsyncCl
 async def get_item_info(item_id, api_key, client) -> ItemInfo:
     item_info_api = f"{emby_server}/emby/Items?api_key={api_key}&Ids={item_id}"
     logger.debug(f"Requesting Item Info: {item_info_api}")
-    try:
-        req = await client.get(item_info_api)
-        req.raise_for_status()
-        req = req.json()
-    except Exception as e:
-        logger.error(f"Error: get_item_info failed, {e}")
-        raise fastapi.HTTPException(status_code=500, detail="Failed to request Emby server, {e}")
+    retries = 3
+    timeout = 10
+    for attempt in range(retries):
+        try:
+            req = await asyncio.wait_for(
+                client.get(item_info_api),
+                timeout=timeout
+            )
+            req.raise_for_status()
+            req = req.json()
+            break
+        except (httpx.ReadTimeout, asyncio.TimeoutError):
+            if attempt == retries - 1:
+                logger.error(f"获取Item信息超时，重试{retries}次失败")
+                raise fastapi.HTTPException(status_code=500, detail="获取Item信息超时")
+            logger.warning(f"获取Item信息超时，重试第{attempt + 2}次")
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Error: get_item_info failed, {e}")
+            raise fastapi.HTTPException(status_code=500, detail=f"Failed to request Emby server, {e}")
+    
     if not req['Items']: 
         logger.debug(f"Item not found: {item_id};")
         return None
