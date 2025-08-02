@@ -11,7 +11,6 @@ from components.utils import *
 from components.cache import *
 from components.models import *
 
-# 使用上下文管理器，创建异步请求客户端
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     app.requests_client = httpx.AsyncClient()
@@ -20,7 +19,6 @@ async def lifespan(app: fastapi.FastAPI):
 
 app = fastapi.FastAPI(lifespan=lifespan)
 
-# return Alist Raw Url
 @get_time
 @cached(ttl=600, cache=Cache.MEMORY, key_builder=lambda f, file_path, host_url, ua, client: file_path + host_url + ua)
 async def get_or_cache_alist_raw_url(file_path, host_url, ua, client: httpx.AsyncClient) -> str:
@@ -45,27 +43,14 @@ async def request_handler(expected_status_code: int,
         raw_url = await alist_raw_url_task
         return fastapi.responses.RedirectResponse(url=raw_url, status_code=302)
     
-    # 处理缓存播放逻辑，捕获缓存结束的异常并返回重定向
+    # 修复流式传输重定向冲突：缓存播放完毕后自然结束流
     if expected_status_code == 206 and cache is not None:
         async def cached_stream_wrapper():
             try:
                 async for chunk in cache:
                     yield chunk
-                # 若缓存正常结束（未抛异常），仍强制重定向
-                raw_url = await alist_raw_url_task
-                raise fastapi.HTTPException(
-                    status_code=302,
-                    detail="Cache completed",
-                    headers={"Location": raw_url}
-                )
-            except StopIteration as e:
-                if "redirect to direct link" in str(e):
-                    raw_url = await alist_raw_url_task
-                    raise fastapi.HTTPException(
-                        status_code=302,
-                        detail="Cache completed, redirecting",
-                        headers={"Location": raw_url}
-                    )
+                # 缓存播放完毕，不抛异常，让流自然结束
+                logger.info("缓存流已正常结束，后续请求将自动重定向")
             except Exception as e:
                 logger.error(f"Error in cached stream: {e}")
                 raise
@@ -91,11 +76,9 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
     media_source_id = request.query_params.get('MediaSourceId') or request.query_params.get('mediaSourceId')
     if not media_source_id:
         raise fastapi.HTTPException(status_code=400, detail="MediaSourceId is required")
-    # 此处调用 get_file_info 返回的是列表
     file_info_list = await get_file_info(item_id, api_key, media_source_id, client=app.requests_client)
     if not file_info_list:
         raise fastapi.HTTPException(status_code=404, detail="MediaSource not found or no files available.")
-    # 我们只处理第一个文件版本
     file_info = file_info_list[0]
 
     item_info: ItemInfo = await get_item_info(item_id, api_key, client=app.requests_client)
@@ -112,9 +95,8 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
     logger.info(f"Requested Item ID: {item_id}")
     logger.info("MediaFile Mount Path: " + file_info.path)
 
-    # 1. 处理黑名单路径
+    # 处理黑名单路径
     if not should_redirect_to_alist(file_info.path):
-        ### 核心修改：遵守 FORCE_HTTPS_REDIRECT 开关 ###
         final_host_url = host_url
         if 'FORCE_HTTPS_REDIRECT' in globals() and FORCE_HTTPS_REDIRECT and host_url.startswith('http://'):
             final_host_url = host_url.replace('http://', 'https://', 1)
@@ -123,7 +105,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
         logger.info("Redirected Url: " + redirected_url)
         return fastapi.responses.RedirectResponse(url=redirected_url, status_code=302)
 
-    # 2. 处理缓存黑名单
+    # 处理缓存黑名单
     if cache_blacklist and any(match_with_regex(pattern, file_info.path) for pattern in cache_blacklist):
         logger.info("File is in cache blacklist. Redirecting directly.")
         request_info.raw_url_task = asyncio.create_task(get_or_cache_alist_raw_url(file_path=file_info.path,host_url=host_url,ua=ua,client=app.requests_client))
@@ -131,7 +113,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
 
     request_info.raw_url_task = asyncio.create_task(get_or_cache_alist_raw_url(file_path=file_info.path,host_url=host_url,ua=ua,client=app.requests_client))
 
-    # 3. 处理关闭缓存的情况
+    # 处理关闭缓存的情况
     if not enable_cache:
         return await request_handler(expected_status_code=302, request_info=request_info, client=app.requests_client)
 
@@ -146,7 +128,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
     if start_byte >= file_info.size:
         return await request_handler(expected_status_code=416, request_info=request_info, resp_header={'Content-Range': f'bytes */{file_info.size}'})
 
-    # 4. 核心的缓存/重定向逻辑
+    # 核心的缓存/重定向逻辑
     cache_file_size = file_info.cache_file_size
     if start_byte < cache_file_size:
         request_info.cache_status = CacheStatus.PARTIAL
@@ -188,7 +170,7 @@ async def webhook(request: fastapi.Request):
                 raise fastapi.HTTPException(status_code=400, detail="Folder deletion is not supported.")
             deleted_file_info = FileInfo(path=data.get('Item').get('Path'),bitrate=0,size=data.get('Item').get('Size'),container="",cache_file_size=0)
             deleted_item_info = ItemInfo(item_id=data.get('Item').get('Id'),item_type=data.get('Item').get('Type'),season_id=data.get('Item').get('SeasonId', None))
-            if clean_cache(deleted_item_info, deleted_file_info):
+            if await clean_cache(deleted_item_info, deleted_file_info):  # 修复此处调用方式（加await）
                 print(f"Cache for Item ID {deleted_item_info.item_id} has been cleaned.")
                 return fastapi.responses.Response(status_code=200)
             else:
