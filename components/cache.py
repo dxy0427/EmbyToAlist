@@ -41,8 +41,8 @@ async def read_file(
                 if not data:
                     break
                 yield data
-        logger.info("缓存内容已播放完毕，准备重定向到直连链接")
-        raise StopIteration("Cache completed, redirect to direct link")
+        logger.info("缓存内容已播放完毕，后续请求将重定向到直连链接")
+        # 移除StopIteration异常，避免流式传输中断
     except FileNotFoundError:
         logger.error(f"File not found: {file_path}")
     except Exception as e:
@@ -173,12 +173,24 @@ async def cache_next_episode(request_info: RequestInfo, api_key: str, client: ht
         logger.debug(f"Skip caching next episode for non-episode item: {request_info.item_info.item_id}")
         return False
     next_episode_id = request_info.item_info.item_id + 1
-    next_item_info = await get_item_info(next_episode_id, api_key, client)
-    if next_item_info and next_item_info.season_id == request_info.item_info.season_id:
-        next_file_info_list = await get_file_info(next_item_info.item_id, api_key, media_source_id=None, client=client)
+    try:
+        # 增加超时重试机制
+        next_item_info = await get_item_info(next_episode_id, api_key, client)
+        if not next_item_info or next_item_info.season_id != request_info.item_info.season_id:
+            logger.debug(f"Next episode not found or different season: {next_episode_id}")
+            return False
+        
+        # 捕获下一集文件信息获取异常
+        try:
+            next_file_info_list = await get_file_info(next_item_info.item_id, api_key, media_source_id=None, client=client)
+        except Exception as e:
+            logger.error(f"获取下一集文件信息失败: {e}")
+            return False
+        
         if not next_file_info_list:
             logger.warning(f"Could not find any media files for the next episode: {next_episode_id}")
             return False
+        
         for file_info in next_file_info_list:
             next_request_info = RequestInfo(
                 file_info=file_info,
@@ -201,9 +213,15 @@ async def cache_next_episode(request_info: RequestInfo, api_key: str, client: ht
                 continue
             else:
                 logger.info(f"Starting background task to cache next episode version: {file_info.path}")
-                await write_cache_file(next_episode_id, next_request_info, req_header=request_info.headers, client=client)
+                # 缓存任务异常不影响主流程
+                try:
+                    await write_cache_file(next_episode_id, next_request_info, req_header=request_info.headers, client=client)
+                except Exception as e:
+                    logger.error(f"缓存下一集失败: {e}")
         return True
-    return False
+    except Exception as e:
+        logger.error(f"缓存下一集时发生错误: {e}")
+        return False
 
 def verify_cache_file(file_info: FileInfo, cache_file_range: Tuple[int, int]) -> bool:
     start, end = cache_file_range
@@ -214,7 +232,7 @@ def verify_cache_file(file_info: FileInfo, cache_file_range: Tuple[int, int]) ->
     else:
         return False
 
-async def clean_cache(file_info: FileInfo, item_info: ItemInfo) -> bool:
+async def clean_cache(item_info: ItemInfo, file_info: FileInfo) -> bool:
     path = file_info.path
     subdirname, dirname = get_hash_subdirectory_from_path(path, item_info.item_type)
     cache_dir = os.path.join(cache_path, subdirname, dirname)
