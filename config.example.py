@@ -75,5 +75,6 @@ cache_blacklist = []
 # 是否强制将 http:// 的重定向地址改为 https://
 # 适用于源站无证书，但通过CDN实现HTTPS访问的场景
 FORCE_HTTPS_REDIRECT = True
+clean_cache_after_remove_media = True  # 媒体删除后清理缓存
 
 log_level = "INFO"
