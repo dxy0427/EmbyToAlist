@@ -1,5 +1,3 @@
-# components/cache.py
-
 import asyncio
 import os
 from weakref import WeakValueDictionary
@@ -12,6 +10,8 @@ from uvicorn.server import logger
 from components.utils import *
 from main import get_or_cache_alist_raw_url, FileInfo, RequestInfo, CacheStatus
 from typing import AsyncGenerator, Optional, Tuple
+
+global_cache_lock = asyncio.Lock()
 
 cache_locks = WeakValueDictionary()
 
@@ -27,7 +27,7 @@ async def read_file(
     start_point: int = 0, 
     end_point: Optional[int] = None, 
     chunk_size: int = 1024*1024, 
-    ) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes, None]:
     try:
         async with aiofiles.open(file_path, 'rb') as f:
             await f.seek(start_point)
@@ -41,6 +41,8 @@ async def read_file(
                 if not data:
                     break
                 yield data
+        logger.info("缓存内容已播放完毕，准备重定向到直连链接")
+        raise StopIteration("Cache completed, redirect to direct link")
     except FileNotFoundError:
         logger.error(f"File not found: {file_path}")
     except Exception as e:
@@ -64,7 +66,6 @@ async def write_cache_file(item_id, request_info: RequestInfo, req_header=None, 
         raw_url = await request_info.raw_url_task
     else:
         raw_url = request_info.raw_url
-    ### 核心修改：强制解析最终URL，无视config开关 ###
     final_url = raw_url
     logger.info(f"Forcing final URL resolution for caching process, starting with: {raw_url}")
     try:
@@ -73,51 +74,67 @@ async def write_cache_file(item_id, request_info: RequestInfo, req_header=None, 
     except Exception as e:
         logger.error(f"Failed to resolve final URL for caching: {e}")
         return False
-    ### 修正结束 ###
     cache_file_name = f'cache_file_{start_point}_{end_point}'
     cache_file_path = os.path.join(cache_path, subdirname, dirname, cache_file_name)
     logger.debug(f"Start to cache file {start_point}-{end_point}: {item_id}, file path: {cache_file_path}")
     os.makedirs(os.path.dirname(cache_file_path), exist_ok=True)
     cache_write_tag_path = os.path.join(cache_path, subdirname, dirname, f'{cache_file_name}.tag')
+    
     lock = get_cache_lock(subdirname, dirname)
     async with lock:
-        async with aiofiles.open(cache_write_tag_path, 'w') as f:
-            pass
         for file in os.listdir(os.path.join(cache_path, subdirname, dirname)):
             if file.startswith('cache_file_') and not file.endswith('.tag'):
                 file_range_start, file_range_end = map(int, file.split('_')[2:4])
                 if start_point >= file_range_start and end_point <= file_range_end:
                     logger.warning(f"Cache Range Already Exists. Abort.")
-                    await aiofiles.os.remove(cache_write_tag_path)
+                    if await aiofiles.os.path.exists(cache_write_tag_path):
+                        await aiofiles.os.remove(cache_write_tag_path)
                     return False
-                elif start_point <= file_range_start and end_point >= file_range_end:
-                    logger.warning(f"Existing Cache Range within new range. Deleting old cache.")
-                    await aiofiles.os.remove(os.path.join(cache_path, subdirname, dirname, file))
-        if req_header is None:
-            req_header = {}
-        else:
-            req_header = dict(req_header)
-        req_header['host'] = final_url.split('/')[2]
-        req_header['range'] = f"bytes={start_point}-{end_point}"
-        try:
-            resp = await client.get(final_url, headers=req_header, timeout=30)
-            if resp.status_code != 206:
-                logger.error(f"Write Cache Error {start_point}-{end_point}: Upstream return code: {resp.status_code}")
-                logger.error(f"Upstream response headers: {resp.headers}")
-                raise ValueError("Upstream response code not 206")
-            async with aiofiles.open(cache_file_path, 'wb') as f:
-                async for chunk in resp.aiter_bytes(chunk_size=1024*1024):
-                    await f.write(chunk)
-            logger.info(f"Write Cache file {start_point}-{end_point}: {item_id} has been written, file path: {cache_file_path}")
-            await aiofiles.os.remove(cache_write_tag_path)
-            return True
-        except Exception as e:
-            logger.error(f"Write Cache Error {start_point}-{end_point}: {e}")
-            if await aiofiles.os.path.exists(cache_file_path):
-                await aiofiles.os.remove(cache_file_path)
-            if await aiofiles.os.path.exists(cache_write_tag_path):
+
+    async with global_cache_lock:
+        logger.info(f"获取全局缓存锁，开始处理视频 {item_id} 缓存")
+        async with lock:  
+            async with aiofiles.open(cache_write_tag_path, 'w') as f:
+                pass
+            try:
+                for file in os.listdir(os.path.join(cache_path, subdirname, dirname)):
+                    if file.startswith('cache_file_') and not file.endswith('.tag'):
+                        file_range_start, file_range_end = map(int, file.split('_')[2:4])
+                        if start_point >= file_range_start and end_point <= file_range_end:
+                            logger.warning(f"等待全局锁期间，缓存已存在。Abort.")
+                            await aiofiles.os.remove(cache_write_tag_path)
+                            return False
+                        elif start_point <= file_range_start and end_point >= file_range_end:
+                            logger.warning(f"等待全局锁期间，发现旧缓存范围更小，删除旧缓存。")
+                            await aiofiles.os.remove(os.path.join(cache_path, subdirname, dirname, file))
+                
+                if req_header is None:
+                    req_header = {}
+                else:
+                    req_header = dict(req_header)
+                req_header['host'] = final_url.split('/')[2]
+                req_header['range'] = f"bytes={start_point}-{end_point}"
+                
+                resp = await client.get(final_url, headers=req_header, timeout=30)
+                if resp.status_code != 206:
+                    logger.error(f"Write Cache Error {start_point}-{end_point}: Upstream return code: {resp.status_code}")
+                    logger.error(f"Upstream response headers: {resp.headers}")
+                    raise ValueError("Upstream response code not 206")
+                async with aiofiles.open(cache_file_path, 'wb') as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=1024*1024):
+                        await f.write(chunk)
+                logger.info(f"视频 {item_id} 缓存完成，释放全局缓存锁，文件路径: {cache_file_path}")
                 await aiofiles.os.remove(cache_write_tag_path)
-            return False
+                return True
+            except Exception as e:
+                logger.error(f"Write Cache Error {start_point}-{end_point}: {e}")
+                if await aiofiles.os.path.exists(cache_file_path):
+                    await aiofiles.os.remove(cache_file_path)
+                if await aiofiles.os.path.exists(cache_write_tag_path):
+                    await aiofiles.os.remove(cache_write_tag_path)
+                return False
+            finally:
+                logger.info(f"视频 {item_id} 缓存任务结束（无论成功与否），释放全局锁")
 
 def read_cache_file(request_info: RequestInfo) -> AsyncGenerator[bytes, None]:
     subdirname, dirname = get_hash_subdirectory_from_path(request_info.file_info.path, request_info.item_info.item_type)
@@ -152,7 +169,6 @@ def get_cache_status(request_info: RequestInfo) -> bool:
     return False
 
 async def cache_next_episode(request_info: RequestInfo, api_key: str, client: httpx.AsyncClient) -> bool:
-    ### 核心修改：修正了对 get_file_info 返回结果的处理方式 ###
     if request_info.item_info.item_type != 'episode': 
         logger.debug(f"Skip caching next episode for non-episode item: {request_info.item_info.item_id}")
         return False
