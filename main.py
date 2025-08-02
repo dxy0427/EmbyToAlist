@@ -1,5 +1,3 @@
-# main.py
-
 from contextlib import asynccontextmanager
 
 import fastapi
@@ -41,14 +39,46 @@ async def request_handler(expected_status_code: int,
     if request_info.cache_status != CacheStatus.UNKNOWN and background_tasks is not None and enable_cache_next_episode is True:
         background_tasks.add_task(cache_next_episode, request_info=request_info, api_key=request_info.api_key, client=client)
         logger.info("Started background task to cache next episode.")
+    
     alist_raw_url_task = request_info.raw_url_task
     if expected_status_code == 302:
         raw_url = await alist_raw_url_task
         return fastapi.responses.RedirectResponse(url=raw_url, status_code=302)
-    if expected_status_code == 206:
-        return fastapi.responses.StreamingResponse(cache, headers=resp_header, status_code=206)
+    
+    # 处理缓存播放逻辑，捕获缓存结束的异常并返回重定向
+    if expected_status_code == 206 and cache is not None:
+        async def cached_stream_wrapper():
+            try:
+                async for chunk in cache:
+                    yield chunk
+                # 若缓存正常结束（未抛异常），仍强制重定向
+                raw_url = await alist_raw_url_task
+                raise fastapi.HTTPException(
+                    status_code=302,
+                    detail="Cache completed",
+                    headers={"Location": raw_url}
+                )
+            except StopIteration as e:
+                if "redirect to direct link" in str(e):
+                    raw_url = await alist_raw_url_task
+                    raise fastapi.HTTPException(
+                        status_code=302,
+                        detail="Cache completed, redirecting",
+                        headers={"Location": raw_url}
+                    )
+            except Exception as e:
+                logger.error(f"Error in cached stream: {e}")
+                raise
+        
+        return fastapi.responses.StreamingResponse(
+            cached_stream_wrapper(),
+            headers=resp_header,
+            status_code=206
+        )
+    
     if expected_status_code == 416:
         return fastapi.responses.Response(status_code=416, headers=resp_header)
+    
     raise fastapi.HTTPException(status_code=500, detail=f"Unexpected argument: {expected_status_code}")
 
 # for infuse, emby
@@ -67,7 +97,7 @@ async def redirect(item_id, filename, request: fastapi.Request, background_tasks
         raise fastapi.HTTPException(status_code=404, detail="MediaSource not found or no files available.")
     # 我们只处理第一个文件版本
     file_info = file_info_list[0]
-    
+
     item_info: ItemInfo = await get_item_info(item_id, api_key, client=app.requests_client)
     host_url = str(request.base_url)
     ua = request.headers.get('User-Agent')
