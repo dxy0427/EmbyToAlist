@@ -1,5 +1,3 @@
-# components/utils.py
-
 import hashlib
 import os
 import re
@@ -207,39 +205,6 @@ async def get_item_info(item_id, api_key, client) -> ItemInfo:
         item_type=item_type,
         season_id=season_id
     )
-
-async def reverse_proxy(cache: AsyncGenerator[bytes, None],
-                        url_task: asyncio.Task[str],
-                        request_header: dict,
-                        response_headers: dict,
-                        client: httpx.AsyncClient,
-                        status_code: int = 206
-                        ):
-    limiter = AsyncLimiter(10*1024*1024, 1)
-    async def merged_stream():
-        try:
-            if cache is not None:
-                async for chunk in cache:
-                    await limiter.acquire(len(chunk))
-                    yield chunk
-                logger.info("Cache exhausted, streaming from source")
-            raw_url = await url_task
-            request_header['host'] = raw_url.split('/')[2]
-            async with client.stream("GET", raw_url, headers=request_header) as response:
-                response.raise_for_status()
-                if status_code == 206 and response.status_code != 206:
-                    raise ValueError(f"Expected 206 response, got {response.status_code}")
-                async for chunk in response.aiter_bytes():
-                    await limiter.acquire(len(chunk))
-                    yield chunk
-        except Exception as e:
-            logger.error(f"Reverse_proxy failed, {e}")
-            raise fastapi.HTTPException(status_code=500, detail="Reverse Proxy Failed")
-    return fastapi.responses.StreamingResponse(
-        merged_stream(), 
-        headers=response_headers, 
-        status_code=status_code
-        )
 
 def validate_regex(word: str) -> bool:
     try:
